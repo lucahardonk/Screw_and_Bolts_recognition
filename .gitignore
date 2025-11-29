@@ -205,3 +205,47 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+
+# ==========================================
+# ROS2 / COLCON (build artifacts)
+# ==========================================
+build/
+install/
+log/
+.colcon/
+
+# Workspaces (if your ROS2 workspace is inside the project)
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Any nested ROS2 workspace
+*/build/
+*/install/
+*/log/
+
+# ==========================================
+# VS CODE settings (safe to ignore)
+# ==========================================
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# ==========================================
+# CMake build artifacts
+# ==========================================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.cmake
+*.o
+*.obj
+*.out
+*.a
+*.so
+*.dll
+*.exe
