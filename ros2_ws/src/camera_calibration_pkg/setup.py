@@ -1,8 +1,6 @@
 from setuptools import setup
-import os
-from glob import glob
 
-package_name = 'camera_pkg'
+package_name = 'camera_calibration_pkg'
 
 setup(
     name=package_name,
@@ -12,19 +10,17 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        # Include the calibration YAML file
-        ('share/' + package_name, ['fisheye_camera.yaml']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'opencv-python', 'numpy', 'pyyaml'],
     zip_safe=True,
     maintainer='your_name',
     maintainer_email='your_email@example.com',
-    description='Camera calibration and undistortion package',
+    description='Fisheye camera calibration package',
     license='Apache License 2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'camera_calibrated_node = camera_pkg.camera_calibrated_node:main',
+            'fisheye_calibration_service = camera_calibration_pkg.fisheye_calibration_service:main',
         ],
     },
 )

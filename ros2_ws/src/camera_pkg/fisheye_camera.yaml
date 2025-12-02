@@ -1,0 +1,61 @@
+calibration_info:
+  num_images_total: 6
+  num_images_used: 6
+  pattern_cols: 8
+  pattern_rows: 5
+  square_size: 0.025
+camera_matrix:
+  cols: 3
+  data:
+  - 1167.6571959696505
+  - 0.0
+  - 1623.1714689534967
+  - 0.0
+  - 1167.9093939812105
+  - 1184.1977320226915
+  - 0.0
+  - 0.0
+  - 1.0
+  rows: 3
+camera_name: fisheye_camera
+distortion_coefficients:
+  cols: 4
+  data:
+  - -0.08104359830457583
+  - 0.16001104506533484
+  - -0.33797308403887005
+  - 0.2574573072185479
+  rows: 1
+distortion_model: fisheye
+image_height: 2448
+image_width: 3264
+projection_matrix:
+  cols: 4
+  data:
+  - 1167.6571959696505
+  - 0.0
+  - 1623.1714689534967
+  - 0.0
+  - 0.0
+  - 1167.9093939812105
+  - 1184.1977320226915
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  rows: 3
+rectification_matrix:
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  rows: 3
+rms_error: 0.3200209203807969
