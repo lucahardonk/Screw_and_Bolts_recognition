@@ -233,6 +233,7 @@ All parameters can be set at runtime using --ros-args.
 
   gaussian_sigma             0.0                                    Sigma value (0 = OpenCV
                                                                     auto)
+                                                                    
   ----------------------------------------------------------------------------------------------
 
 If an even kernel is provided, the node automatically adjusts it to the
