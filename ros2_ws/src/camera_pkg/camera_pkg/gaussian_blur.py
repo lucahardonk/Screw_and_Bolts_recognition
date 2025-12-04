@@ -4,16 +4,28 @@ Gaussian Blur Filter ROS2 Node
 
 This node subscribes to calibrated camera frames and applies Gaussian blur.
 
-Input:  /camera/calibrated (sensor_msgs/Image)
-Output: /camera/gaussian_blurred (sensor_msgs/Image)
-        /camera/gaussian_blurred/camera_info (sensor_msgs/CameraInfo)
-
-PARAMETERS:
+ROS2 PARAMETERS:
+- input_image_topic: Input image topic (default: /camera/calibrated)
+- input_camera_info_topic: Input camera info topic (default: /camera/calibrated/camera_info)
+- output_image_topic: Output blurred image topic (default: /camera/gaussian_blurred)
+- output_camera_info_topic: Output camera info topic (default: /camera/gaussian_blurred/camera_info)
 - gaussian_kernel_size: Size of Gaussian kernel (must be odd: 3, 5, 7, 9, 11, etc.)
-                        Larger = more blur. Typical range: 3-15
+                        Larger = more blur. Typical range: 3-15 (default: 15)
 - gaussian_sigma: Standard deviation for Gaussian kernel
                   0 = auto-calculate from kernel size
-                  Larger = more blur. Typical range: 0.5-5.0
+                  Larger = more blur. Typical range: 0.5-5.0 (default: 0.0)
+- queue_size: Queue size for publishers and subscribers (default: 10)
+
+EXAMPLE ROS2 RUN COMMAND:
+ros2 run <package_name> gaussian_blur_node \
+  --ros-args \
+  -p input_image_topic:=/camera/calibrated \
+  -p input_camera_info_topic:=/camera/calibrated/camera_info \
+  -p output_image_topic:=/camera/gaussian_blurred \
+  -p output_camera_info_topic:=/camera/gaussian_blurred/camera_info \
+  -p gaussian_kernel_size:=15 \
+  -p gaussian_sigma:=0.0 \
+  -p queue_size:=10
 """
 
 import cv2
@@ -21,24 +33,10 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import ParameterDescriptor
 
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
-
-# ---------------------------------------------------------------
-# CONFIG (can be later turned into ROS2 parameters)
-# ---------------------------------------------------------------
-GAUSSIAN_KERNEL_SIZE = 15  # Must be odd (3, 5, 7, 9, 11, etc.)
-GAUSSIAN_SIGMA = 0         # 0 = auto-calculate
-
-# ---------------------------------------------------------------
-# GLOBAL STATS (for logging/debug)
-# ---------------------------------------------------------------
-stats = {
-    "frames_received": 0,
-    "frames_processed": 0,
-    "errors": 0
-}
 
 # ---------------------------------------------------------------
 # ROS2 NODE
@@ -47,27 +45,72 @@ class GaussianBlurNode(Node):
     def __init__(self):
         super().__init__("gaussian_blur_node")
 
-        self.get_logger().info("=" * 60)
-        self.get_logger().info("Gaussian Blur Filter ROS2 Node")
-        self.get_logger().info("=" * 60)
-        self.get_logger().info(f"Kernel Size:     {GAUSSIAN_KERNEL_SIZE}")
-        self.get_logger().info(f"Sigma:           {GAUSSIAN_SIGMA}")
-        self.get_logger().info("=" * 60)
-        self.get_logger().info("Subscribing to:  /camera/calibrated")
-        self.get_logger().info("                 /camera/calibrated/camera_info")
-        self.get_logger().info("Publishing to:   /camera/gaussian_blurred")
-        self.get_logger().info("                 /camera/gaussian_blurred/camera_info")
-        self.get_logger().info("=" * 60)
+        # Declare ROS2 parameters with default values and descriptions
+        self.declare_parameter(
+            "input_image_topic",
+            "/camera/calibrated",
+            ParameterDescriptor(description="Input image topic")
+        )
+        self.declare_parameter(
+            "input_camera_info_topic",
+            "/camera/calibrated/camera_info",
+            ParameterDescriptor(description="Input camera info topic")
+        )
+        self.declare_parameter(
+            "output_image_topic",
+            "/camera/gaussian_blurred",
+            ParameterDescriptor(description="Output blurred image topic")
+        )
+        self.declare_parameter(
+            "output_camera_info_topic",
+            "/camera/gaussian_blurred/camera_info",
+            ParameterDescriptor(description="Output camera info topic")
+        )
+        self.declare_parameter(
+            "gaussian_kernel_size",
+            15,
+            ParameterDescriptor(description="Gaussian kernel size (must be odd)")
+        )
+        self.declare_parameter(
+            "gaussian_sigma",
+            0.0,
+            ParameterDescriptor(description="Gaussian sigma (0 = auto-calculate)")
+        )
+        self.declare_parameter(
+            "queue_size",
+            10,
+            ParameterDescriptor(description="Queue size for publishers and subscribers")
+        )
+
+        # Get parameter values
+        input_image_topic = self.get_parameter("input_image_topic").value
+        input_camera_info_topic = self.get_parameter("input_camera_info_topic").value
+        output_image_topic = self.get_parameter("output_image_topic").value
+        output_camera_info_topic = self.get_parameter("output_camera_info_topic").value
+        self.kernel_size = self.get_parameter("gaussian_kernel_size").value
+        self.sigma = self.get_parameter("gaussian_sigma").value
+        queue_size = self.get_parameter("queue_size").value
 
         # Ensure kernel size is odd
-        self.kernel_size = GAUSSIAN_KERNEL_SIZE
         if self.kernel_size % 2 == 0:
             self.kernel_size += 1
             self.get_logger().warn(
                 f"Kernel size must be odd. Adjusted to {self.kernel_size}"
             )
 
-        self.sigma = GAUSSIAN_SIGMA
+        # Log configuration
+        self.get_logger().info("=" * 60)
+        self.get_logger().info("Gaussian Blur Filter ROS2 Node")
+        self.get_logger().info("=" * 60)
+        self.get_logger().info(f"Kernel Size:     {self.kernel_size}")
+        self.get_logger().info(f"Sigma:           {self.sigma}")
+        self.get_logger().info(f"Queue Size:      {queue_size}")
+        self.get_logger().info("=" * 60)
+        self.get_logger().info(f"Subscribing to:  {input_image_topic}")
+        self.get_logger().info(f"                 {input_camera_info_topic}")
+        self.get_logger().info(f"Publishing to:   {output_image_topic}")
+        self.get_logger().info(f"                 {output_camera_info_topic}")
+        self.get_logger().info("=" * 60)
 
         # CV Bridge for converting between ROS Image and OpenCV
         self.bridge = CvBridge()
@@ -75,33 +118,38 @@ class GaussianBlurNode(Node):
         # Subscribers
         self.image_sub = self.create_subscription(
             Image,
-            "/camera/calibrated",
+            input_image_topic,
             self.image_callback,
-            10
+            queue_size
         )
 
         self.cinfo_sub = self.create_subscription(
             CameraInfo,
-            "/camera/calibrated/camera_info",
+            input_camera_info_topic,
             self.cinfo_callback,
-            10
+            queue_size
         )
 
         # Publishers
         self.image_pub = self.create_publisher(
             Image,
-            "/camera/gaussian_blurred",
-            10
+            output_image_topic,
+            queue_size
         )
 
         self.cinfo_pub = self.create_publisher(
             CameraInfo,
-            "/camera/gaussian_blurred/camera_info",
-            10
+            output_camera_info_topic,
+            queue_size
         )
 
         # Store latest camera info to republish with blurred image
         self.latest_cinfo = None
+
+        # Stats tracking
+        self.frames_received = 0
+        self.frames_processed = 0
+        self.errors = 0
 
         self.get_logger().info("Gaussian Blur Node ready")
 
@@ -114,9 +162,7 @@ class GaussianBlurNode(Node):
         Callback for incoming calibrated images.
         Applies Gaussian blur and republishes.
         """
-        global stats
-
-        stats["frames_received"] += 1
+        self.frames_received += 1
 
         try:
             # Convert ROS Image to OpenCV format
@@ -129,7 +175,7 @@ class GaussianBlurNode(Node):
                 self.sigma
             )
 
-            stats["frames_processed"] += 1
+            self.frames_processed += 1
 
             # Convert back to ROS Image
             blurred_msg = self.bridge.cv2_to_imgmsg(blurred, encoding="bgr8")
@@ -146,13 +192,13 @@ class GaussianBlurNode(Node):
 
             self.get_logger().debug(
                 f"Processed frame. "
-                f"received={stats['frames_received']}, "
-                f"processed={stats['frames_processed']}, "
-                f"errors={stats['errors']}"
+                f"received={self.frames_received}, "
+                f"processed={self.frames_processed}, "
+                f"errors={self.errors}"
             )
 
         except Exception as e:
-            stats["errors"] += 1
+            self.errors += 1
             self.get_logger().error(f"Error processing frame: {e}")
 
 # ---------------------------------------------------------------
@@ -172,3 +218,20 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
+
+
+"""
+FULL ROS2 RUN COMMAND WITH ALL PARAMETERS:
+
+EXAMPLE WITH CUSTOM VALUES:
+
+ros2 run <package_name> gaussian_blur_node \
+  --ros-args \
+  -p input_image_topic:=/my_camera/image_raw \
+  -p input_camera_info_topic:=/my_camera/camera_info \
+  -p output_image_topic:=/my_camera/blurred \
+  -p output_camera_info_topic:=/my_camera/blurred/camera_info \
+  -p gaussian_kernel_size:=9 \
+  -p gaussian_sigma:=2.0 \
+  -p queue_size:=5
+"""
