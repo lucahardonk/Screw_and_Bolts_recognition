@@ -62,7 +62,7 @@ python.exe first_camera_node_windows_native.py
 
 camera_calibrated_node.py is the ROS2 component responsible for
 converting the high-resolution JPEG frames exposed by the Windows-side
-camera server into rectified, undistorted, and cropped images suitable
+camera server into *rectified, undistorted, and cropped* images suitable
 for robotics processing inside the ROS ecosystem.
 
 It reads the raw images from:
