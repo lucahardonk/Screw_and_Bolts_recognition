@@ -1,11 +1,22 @@
-# Automated Screws & Bolts Sorting System
-image prossecing project to categorize screws from bolts from nuts and order them by size
-also a 3 axis cnc machine with a custom 3D printed gripper has to pick and place to organize the mess of screws
+text_md = """# Automated Screws & Bolts Sorting System
 
-## Project Architecture
-the project will be aminly in python. as opencv offers a great library to work with images. 
-also to maintain modularity i would like to use ros2, also very useful to saparate image processing, calibation and cnc kinematics in different packages. 
-also some triks to make comunication efficnt betwheen different os like windos and wsl some web based comunication and debugging will be implemented.
+This project is an automated vision-guided sorting system designed to classify screws, bolts, and nuts, estimate their size and orientation, and finally sort them using a 3-axis CNC machine equipped with a custom 3D-printed gripper.
+
+Using computer vision, robotics, and modular software design, the system transforms a chaotic pile of fasteners into a neatly organized storage layout.
+
+# Project Architecture
+
+The project is implemented primarily in Python, leveraging OpenCV for image processing and ROS2 for modularity.
+
+ROS2 allows us to cleanly separate:
+
+- Image acquisition & processing
+- Camera calibration
+- Object classification & measurement
+- CNC kinematics and motion planning
+- Pick-and-place execution
+
+Because development takes place across both Windows and WSL2, the project integrates lightweight web-based communication tools (HTTP streaming endpoints, debugging dashboards, etc.) to ensure seamless data flow between environments.
 
 ---
 # 1 Camera Package
