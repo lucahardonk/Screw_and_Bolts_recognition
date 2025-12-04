@@ -88,14 +88,14 @@ class CannyEdgeNode(Node):
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
 
             # Convert to grayscale (Canny requires single channel)
-            gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+            #gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
 
             # Optional: Apply Gaussian blur to reduce noise
-            blurred = cv2.GaussianBlur(gray, (5, 5), 1.4)
+            #blurred = cv2.GaussianBlur(gray, (5, 5), 1.4)
 
             # Apply Canny edge detection
             edges = cv2.Canny(
-                blurred,
+                cv_img,
                 self.low_threshold,
                 self.high_threshold,
                 apertureSize=self.aperture_size,
