@@ -177,7 +177,6 @@ downstream robotics algorithms.
 The Gaussian blur node takes the distortion-corrected frames from:
 
 -   /camera/calibrated
--   /camera/calibrated/camera_info
 
 and applies a Gaussian blurring kernel, reducing high-frequency noise
 and smoothing textures. This is useful for:
@@ -190,7 +189,6 @@ and smoothing textures. This is useful for:
 It then republishes the result back into the ROS ecosystem at:
 
 -   /camera/gaussian_blurred
--   /camera/gaussian_blurred/camera_info
 
 ------------------------------------------------------------------------
 
@@ -215,22 +213,6 @@ Effects:
 
 ------------------------------------------------------------------------
 
-3. Publish Blurred Output
-
-After processing, the node publishes:
-
-  -------------------------------------------------------------------------------------
-  Topic                                  Description
-  -------------------------------------- ----------------------------------------------
-  /camera/gaussian_blurred               Blurred image
-
-  /camera/gaussian_blurred/camera_info   CameraInfo (same intrinsics)
-  -------------------------------------------------------------------------------------
-
-The timestamp and frame_id are preserved for correct synchronization.
-
-------------------------------------------------------------------------
-
 ⚙️ Configurable Parameters
 
 All parameters can be set at runtime using --ros-args.
@@ -251,9 +233,6 @@ All parameters can be set at runtime using --ros-args.
 
   gaussian_sigma             0.0                                    Sigma value (0 = OpenCV
                                                                     auto)
-
-  queue_size                 10                                     ROS2 publisher/subscriber
-                                                                    queue size
   ----------------------------------------------------------------------------------------------
 
 If an even kernel is provided, the node automatically adjusts it to the
@@ -263,24 +242,10 @@ nearest odd number.
 
 ▶️ Example Run Command
 
-    ros2 run <package_name> gaussian_blur_node   --ros-args   -p input_image_topic:=/camera/calibrated   -p input_camera_info_topic:=/camera/calibrated/camera_info   -p output_image_topic:=/camera/gaussian_blurred   -p output_camera_info_topic:=/camera/gaussian_blurred/camera_info   -p gaussian_kernel_size:=15   -p gaussian_sigma:=0.0   -p queue_size:=10
+ros2 run camera_pkg gaussian_blur_node   --ros-args   -p input_image_topic:=/camera/calibrated   -p input_camera_info_topic:=/camera/calibrated/camera_info   -p output_image_topic:=/camera/gaussian_blurred   -p output_camera_info_topic:=/camera/gaussian_blurred/camera_info   -p gaussian_kernel_size:=15   -p gaussian_sigma:=0.0
 
 ------------------------------------------------------------------------
 
-📦 Pipeline Context
-
-With this module added, your ROS2 camera pipeline now supports a clean
-chain of processing steps:
-
-    RAW camera frames (Windows server)
-            ↓
-    camera_calibrated_node.py
-            ↓ undistort + center crop
-    /camera/calibrated
-            ↓
-    camera_blur.py
-            ↓ Gaussian blur
-    /camera/gaussian_blurred
 
 
 
