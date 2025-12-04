@@ -25,6 +25,9 @@ setup(
     entry_points={
         'console_scripts': [
             'camera_calibrated_node = camera_pkg.camera_calibrated_node:main',
+            'gaussian_blur_node = camera_pkg.gaussian_blur:main',
+            'camera_visualizer_node = camera_pkg.camera_visualizer_node:main',
+            'canny_edge_node = camera_pkg.canny_node:main',
         ],
     },
 )
