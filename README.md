@@ -4,7 +4,7 @@ This project is an automated vision-guided sorting system designed to classify s
 
 Using computer vision, robotics, and modular software design, the system transforms a chaotic pile of fasteners into a neatly organized storage layout.
 
-# Project Architecture
+## Project Architecture
 
 The project is implemented primarily in Python, leveraging OpenCV for image processing and ROS2 for modularity.
 
