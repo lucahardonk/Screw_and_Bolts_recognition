@@ -1,4 +1,4 @@
-text_md = """# Automated Screws & Bolts Sorting System
+# Automated Screws & Bolts Sorting System
 
 This project is an automated vision-guided sorting system designed to classify screws, bolts, and nuts, estimate their size and orientation, and finally sort them using a 3-axis CNC machine equipped with a custom 3D-printed gripper.
 
