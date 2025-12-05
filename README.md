@@ -252,5 +252,117 @@ ros2 run camera_pkg gaussian_blur_node   --ros-args   -p input_image_topic:=/cam
 ------------------------------------------------------------------------
 
 
+## 1.4 canny_edge_detector.py — Canny Edge Detection Node
+
+The `canny_edge_node.py` is a ROS2 processing node that applies the Canny edge detection algorithm. It then republishes the edge-detected image along with its corresponding CameraInfo.
+
+------------------------------------------------------------------------
+
+✅ Purpose of the Node
+
+The Canny edge detection node takes the distortion-corrected frames from:
+
+-   `/camera/calibrated`
+
+and applies the Canny edge detection algorithm, identifying sharp intensity gradients that correspond to object boundaries, lines, and contours. This is useful for:
+
+-   Line and lane detection
+-   Object boundary extraction
+-   Feature-based navigation
+-   Preprocessing for shape recognition
+-   Vision-based control systems
+
+It then republishes the result back into the ROS ecosystem at:
+
+-   `/camera/canny`
+
+------------------------------------------------------------------------
+
+🧠 How It Works
+
+1. **Apply Canny Edge Detection**
+
+The filter uses a multi-stage algorithm:
+
+-   Gradient calculation using Sobel operators
+-   Non-maximum suppression to thin edges
+-   Double thresholding with hysteresis to classify edges
+
+Example:
+
+```python
+edges = cv2.Canny(cv_image, low_threshold, high_threshold, 
+                  apertureSize=aperture_size, L2gradient=l2_gradient)
+```
+
+Effects:
+
+-   **Lower `low_threshold`** = more sensitive, detects weaker edges
+-   **Higher `high_threshold`** = only strong edges are retained
+-   **Larger `aperture_size`** = smoother gradients, less noise sensitivity
+-   **`L2gradient=True`** = more accurate but slower gradient computation
+
+------------------------------------------------------------------------
+
+⚙️ Configurable Parameters
+
+All parameters can be set at runtime using `--ros-args`.
+
+| Parameter        | Default | Description                                                                 |
+|------------------|---------|-----------------------------------------------------------------------------|
+| `low_threshold`  | 50      | Lower hysteresis threshold; controls edge sensitivity                       |
+| `high_threshold` | 150     | Upper hysteresis threshold; defines strong edges                            |
+| `aperture_size`  | 3       | Sobel kernel size (must be 3, 5, or 7); controls gradient smoothing         |
+| `l2_gradient`    | false   | Use L2-norm for gradient magnitude (true = accurate, false = faster)        |
+
+**Note:** The node automatically validates that `aperture_size` is one of `3`, `5`, or `7`. Invalid values will cause the node to terminate with an error.
+
+------------------------------------------------------------------------
+
+🔍 Core Functionality
+
+The main processing happens in:
+
+**`image_callback(self, msg: Image)`**
+
+This callback:
+1. Converts the incoming ROS `sensor_msgs/Image` to an OpenCV image using `CvBridge`
+2. Applies Canny edge detection (`cv2.Canny`) with the configured thresholds and aperture size
+3. Converts the resulting single-channel edge image back to BGR for visualization (edges appear white on black background)
+4. Publishes the edge-detected image to `/camera/canny`
+5. Republishes the latest `CameraInfo` (if available) on `/camera/canny/camera_info` with synchronized header timestamps
+
+This is the **most important function**, as it encapsulates the entire vision-processing pipeline from subscription to publication.
+
+------------------------------------------------------------------------
+
+▶️ Example Run Command
+
+**Default parameters:**
+
+```bash
+ros2 run camera_pkg canny_edge_node
+```
+
+**With all parameters explicitly set:**
+
+```bash
+
+ros2 run camera_pkg canny_edge_node --ros-args -p input_image_topic:=/camera/calibrated -p output_image_topic:=/camera/canny -p low_threshold:=20 -p high_threshold:=100 -p aperture_size:=3 -p l2_gradient:=false
+
+
+```
+
+**Topics:**
+
+- **Subscribes:**
+  - `/camera/calibrated` (`sensor_msgs/Image`)
+  - `/camera/calibrated/camera_info` (`sensor_msgs/CameraInfo`)
+
+- **Publishes:**
+  - `/camera/canny` (`sensor_msgs/Image`)
+  - `/camera/canny/camera_info` (`sensor_msgs/CameraInfo`)
+
+------------------------------------------------------------------------
 
 
