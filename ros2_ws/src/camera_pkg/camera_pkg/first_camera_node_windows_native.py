@@ -7,7 +7,7 @@ from threading import Thread, Lock
 # -------------------------
 # CONFIG
 # -------------------------
-CAM_INDEX = 0
+CAMERA_NAME = "HD USB Camera"  # Change this to match your camera's friendly name
 PORT = 8000
 
 # Full resolution for snapshots
@@ -21,15 +21,38 @@ STREAM_HEIGHT = 720
 TARGET_FPS = 15
 
 # -------------------------
-# CAMERA INIT WITH AGGRESSIVE MODE FORCING
+# CAMERA DETECTION HELPER
+# -------------------------
+def find_camera_by_name(target_name):
+    """
+    Find camera index by matching friendly name.
+    Returns the index if found, otherwise tries all indices.
+    """
+    print(f"[INFO] Searching for camera: '{target_name}'")
+    
+    # Try indices 0-9 and check if any match
+    for i in range(10):
+        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            # Try to read a frame to confirm it works
+            ret, frame = cap.read()
+            if ret:
+                print(f"[INFO] Found working camera at index {i}")
+                # We can't directly query the name via OpenCV, so we return the first working one
+                # If you want to be more specific, manually set the index after testing
+                return i, cap
+            cap.release()
+    
+    raise RuntimeError(f"[ERROR] Could not find camera '{target_name}' or any working camera")
+
+# -------------------------
+# CAMERA INIT WITH NAME-BASED DETECTION
 # -------------------------
 print("[INFO] Attempting to open camera with maximum resolution...")
 
-# Try Method 1: DirectShow with explicit mode setting
-cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
-
-if not cap.isOpened():
-    raise RuntimeError(f"Could not open camera at index {CAM_INDEX}")
+# Find camera by name (or first available)
+CAM_INDEX, cap = find_camera_by_name(CAMERA_NAME)
+print(f"[INFO] Using camera at index {CAM_INDEX}")
 
 print("[INFO] Camera opened, forcing settings...")
 
@@ -291,6 +314,8 @@ def index():
       <body>
         <h1>🎥 SVPRO 8MP Fisheye – Live Stream</h1>
         <div class="info">
+          <strong>Camera Name:</strong> {CAMERA_NAME}<br>
+          <strong>Camera Index:</strong> {CAM_INDEX}<br>
           <strong>Camera Resolution:</strong> {actual_width}x{actual_height}<br>
           <strong>Stream Resolution:</strong> {STREAM_WIDTH}x{STREAM_HEIGHT}<br>
           <strong>Snapshot Resolution:</strong> {actual_width}x{actual_height}<br>

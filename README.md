@@ -226,8 +226,6 @@ All parameters can be set at runtime using --ros-args.
 
   output_image_topic         /camera/gaussian_blurred               Output blurred image
 
-  output_camera_info_topic   /camera/gaussian_blurred/camera_info   Output CameraInfo
-
   gaussian_kernel_size       15                                     Must be odd, controls blur
                                                                     size
 
@@ -245,7 +243,7 @@ nearest odd number.
 
 ```bash
 
-ros2 run camera_pkg gaussian_blur_node   --ros-args   -p input_image_topic:=/camera/calibrated   -p input_camera_info_topic:=/camera/calibrated/camera_info   -p output_image_topic:=/camera/gaussian_blurred   -p output_camera_info_topic:=/camera/gaussian_blurred/camera_info   -p gaussian_kernel_size:=15   -p gaussian_sigma:=0.0
+ros2 run camera_pkg gaussian_blur_node --ros-args -p input_image_topic:=/camera/calibrated -p output_image_topic:=/camera/gaussian_blurred -p gaussian_kernel_size:=15 -p gaussian_sigma:=0.0
 
 ```
 
@@ -348,7 +346,8 @@ ros2 run camera_pkg canny_edge_node
 
 ```bash
 
-ros2 run camera_pkg canny_edge_node --ros-args -p input_image_topic:=/camera/calibrated -p output_image_topic:=/camera/canny -p low_threshold:=20 -p high_threshold:=100 -p aperture_size:=3 -p l2_gradient:=false
+ros2 run camera_pkg canny_edge_node --ros-args -p input_image_topic:=/camera/calibrated -p output_image_topic:=/camera/canny -p low_threshold:=120 -p high_threshold:=225 -p aperture_size:=3 -p l2_gradient:=true
+
 
 
 ```
