@@ -3,27 +3,29 @@
 Canny Edge Detection ROS2 Node
 ===============================
 
-Subscribes to /camera/calibrated and applies Canny edge detection.
-Publishes the edge-detected image to /camera/canny.
+Subscribes to a camera image topic and applies Canny edge detection.
+Publishes the edge-detected image to an output topic.
 
 ROS Parameters
 --------------
-low_threshold : int    – Canny low threshold (default 50)
-high_threshold : int   – Canny high threshold (default 150)
-aperture_size : int    – Sobel kernel size, must be 3, 5, or 7 (default 3)
-l2_gradient : bool     – Use L2 norm for gradient (default False)
+input_image_topic : str   – Input image topic (default /camera/calibrated)
+output_image_topic : str  – Output image topic (default /camera/canny)
+low_threshold : int       – Canny low threshold (default 50)
+high_threshold : int      – Canny high threshold (default 150)
+aperture_size : int       – Sobel kernel size, must be 3, 5, or 7 (default 3)
+l2_gradient : bool        – Use L2 norm for gradient (default False)
 
 Usage
 -----
 ros2 run camera_pkg canny_edge_node
 
-# With custom thresholds:
-ros2 run camera_pkg canny_edge_node --ros-args -p low_threshold:=20 -p high_threshold:=100 -p aperture_size:=3 -p l2_gradient:=false
+# With custom parameters:
+ros2 run camera_pkg canny_edge_node --ros-args -p input_image_topic:=/camera/calibrated -p output_image_topic:=/camera/canny -p low_threshold:=20 -p high_threshold:=100 -p aperture_size:=3 -p l2_gradient:=false
 """
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -34,12 +36,16 @@ class CannyEdgeNode(Node):
         super().__init__("canny_edge_node")
 
         # Declare parameters
+        self.declare_parameter("input_image_topic", "/camera/calibrated")
+        self.declare_parameter("output_image_topic", "/camera/canny")
         self.declare_parameter("low_threshold", 50)
         self.declare_parameter("high_threshold", 150)
         self.declare_parameter("aperture_size", 3)
         self.declare_parameter("l2_gradient", False)
 
         # Read parameters
+        input_image_topic = self.get_parameter("input_image_topic").value
+        output_image_topic = self.get_parameter("output_image_topic").value
         self.low_threshold = self.get_parameter("low_threshold").value
         self.high_threshold = self.get_parameter("high_threshold").value
         self.aperture_size = self.get_parameter("aperture_size").value
@@ -58,28 +64,17 @@ class CannyEdgeNode(Node):
         # CV Bridge
         self.bridge = CvBridge()
 
-        # Subscribers
+        # Subscriber
         self.image_sub = self.create_subscription(
-            Image, "/camera/calibrated", self.image_callback, 10
-        )
-        self.cinfo_sub = self.create_subscription(
-            CameraInfo, "/camera/calibrated/camera_info", self.cinfo_callback, 10
+            Image, input_image_topic, self.image_callback, 10
         )
 
-        # Publishers
-        self.image_pub = self.create_publisher(Image, "/camera/canny", 10)
-        self.cinfo_pub = self.create_publisher(CameraInfo, "/camera/canny/camera_info", 10)
-
-        # Store latest CameraInfo
-        self.latest_cinfo = None
+        # Publisher
+        self.image_pub = self.create_publisher(Image, output_image_topic, 10)
 
         self.get_logger().info("Canny Edge Detection node started")
-        self.get_logger().info("Subscribing to: /camera/calibrated")
-        self.get_logger().info("Publishing to: /camera/canny")
-
-    def cinfo_callback(self, msg: CameraInfo):
-        """Store the latest CameraInfo to republish."""
-        self.latest_cinfo = msg
+        self.get_logger().info(f"Subscribing to: {input_image_topic}")
+        self.get_logger().info(f"Publishing to: {output_image_topic}")
 
     def image_callback(self, msg: Image):
         """Apply Canny edge detection and publish."""
@@ -88,18 +83,10 @@ class CannyEdgeNode(Node):
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
 
             # Convert to grayscale (Canny requires single channel)
-            #gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-
-           
+            gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
 
             # Apply Canny edge detection
-            edges = cv2.Canny(
-                cv_img,
-                self.low_threshold,
-                self.high_threshold,
-                apertureSize=self.aperture_size,
-                L2gradient=self.l2_gradient,
-            )
+            edges = cv2.Canny(gray,self.low_threshold,self.high_threshold,apertureSize=self.aperture_size,L2gradient=self.l2_gradient)
 
             # Convert back to BGR for visualization (edges will be white on black)
             edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
@@ -110,12 +97,6 @@ class CannyEdgeNode(Node):
 
             # Publish
             self.image_pub.publish(out_msg)
-
-            # Republish CameraInfo (geometry unchanged)
-            if self.latest_cinfo is not None:
-                cinfo = self.latest_cinfo
-                cinfo.header = msg.header
-                self.cinfo_pub.publish(cinfo)
 
         except Exception as e:
             self.get_logger().error(f"Error processing image: {e}")
