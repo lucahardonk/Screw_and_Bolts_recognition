@@ -243,7 +243,11 @@ nearest odd number.
 
 ▶️ Example Run Command
 
+```bash
+
 ros2 run camera_pkg gaussian_blur_node   --ros-args   -p input_image_topic:=/camera/calibrated   -p input_camera_info_topic:=/camera/calibrated/camera_info   -p output_image_topic:=/camera/gaussian_blurred   -p output_camera_info_topic:=/camera/gaussian_blurred/camera_info   -p gaussian_kernel_size:=15   -p gaussian_sigma:=0.0
+
+```
 
 ------------------------------------------------------------------------
 
