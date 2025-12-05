@@ -36,6 +36,9 @@ setup(
             'camera_visualizer_node = camera_pkg.camera_visualizer_node:main',
             'canny_edge_node = camera_pkg.canny_node:main',
             'background_removal_node = camera_pkg.background_removal_node:main',
+            'grey_scaled_node = camera_pkg.grey_scaled_node:main',
+            'otsu_node = camera_pkg.otsu_thresholding:main',
+            'morphological_closure_node = camera_pkg.morphological_closure:main',
 
         ],
     },

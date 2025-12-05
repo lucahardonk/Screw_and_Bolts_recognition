@@ -18,9 +18,7 @@ Usage
 ros2 run camera_pkg background_removal_node
 
 With custom topics:
-ros2 run camera_pkg background_removal_node --ros-args \
-  -p input_image_topic:=/camera/calibrated \
-  -p output_image_topic:=/camera/background_removed
+ros2 run camera_pkg background_removal_node --ros-args  -p input_image_topic:=/camera/calibrated -p output_image_topic:=/camera/background_removed
 """
 
 import rclpy
@@ -80,17 +78,7 @@ class BackgroundRemovalNode(Node):
         
         self.background_path = os.path.join(candidate, 'background.jpg')
         self.get_logger().info(f"Background image path: {self.background_path}")
-        
-        # Try to load existing background
-        if os.path.exists(self.background_path):
-            try:
-                self.background = cv2.imread(self.background_path)
-                if self.background is not None:
-                    self.get_logger().info(f"Loaded existing background from: {self.background_path}")
-                else:
-                    self.get_logger().warn(f"Failed to load background from: {self.background_path}")
-            except Exception as e:
-                self.get_logger().warn(f"Error loading background: {e}")
+        self.get_logger().info("Will capture new background on first frame")
 
         # Subscriber
         self.image_sub = self.create_subscription(

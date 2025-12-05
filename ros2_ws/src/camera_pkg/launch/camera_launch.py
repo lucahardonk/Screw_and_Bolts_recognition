@@ -17,6 +17,8 @@ def generate_launch_description():
         shell=False
     )
 
+    #delay 5 second with TimerAction delayed_camera_calibrated
+
     # --- camera_calibrated_node ---
     # this node performs camera calibration using the provided parameters YAML file
     camera_calibrated_node = Node(
@@ -27,11 +29,30 @@ def generate_launch_description():
         parameters=[]
     )
 
-    # Add 10 second delay after launch start before camera_calibrated_node
-    delayed_camera_calibrated = TimerAction(
-        period=10.0,
-        actions=[camera_calibrated_node]
+    # --- background_removal_node ---
+    background_removal_node = Node(
+        package='camera_pkg',
+        executable='background_removal_node',
+        name='background_removal_node',
+        output='screen',
+        parameters=[
+            {"input_image_topic": "/camera/calibrated"},
+            {"output_image_topic": "/camera/background_removed"}
+        ]
     )
+
+    # --- grey_scaled_node ---
+    grey_scaled_node = Node(
+        package='camera_pkg',
+        executable='grey_scaled_node',
+        name='grey_scaled_node',
+        output='screen',
+        parameters=[
+            {"input_image_topic": "/camera/background_removed"},
+            {"output_image_topic": "/camera/background_grayed"}
+        ]
+    )
+
 
     # --- camera_visualizer_node ---
     # localhost web gui to visualize each camera topic
@@ -40,11 +61,27 @@ def generate_launch_description():
         executable='camera_visualizer_node',
         name='camera_visualizer_node',
         output='screen',
-        parameters=[{"topics": ["/camera/calibrated", "/camera/gaussian_blurred", "/camera/canny", "/camera/background_removed"]}]
+        parameters=[{"topics": ["/camera/calibrated", "/camera/gaussian_blurred", "/camera/canny", "/camera/background_removed", "/camera/background_grayed", "/camera/otsu", "/camera/closure"]}]
     )
 
+    
+
+
+
+
+    # Add 5 second delay after launch start before camera_calibrated_node
+    delayed_camera_calibrated = TimerAction(
+        period=5.0,
+        actions=[camera_calibrated_node]
+    )
+    
+
     return LaunchDescription([
-        windows_camera,            # starts immediately
-        delayed_camera_calibrated, # starts 10s after launch
-        camera_visualizer_node,    # starts immediately at launch
+        windows_camera,           # starts immediately
+        delayed_camera_calibrated, # starts 5s after launch
+        background_removal_node,
+        grey_scaled_node,
+
+
+        camera_visualizer_node,    
     ])
