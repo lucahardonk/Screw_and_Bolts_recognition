@@ -90,8 +90,7 @@ class CannyEdgeNode(Node):
             # Convert to grayscale (Canny requires single channel)
             #gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
 
-            # Optional: Apply Gaussian blur to reduce noise
-            #blurred = cv2.GaussianBlur(gray, (5, 5), 1.4)
+           
 
             # Apply Canny edge detection
             edges = cv2.Canny(
