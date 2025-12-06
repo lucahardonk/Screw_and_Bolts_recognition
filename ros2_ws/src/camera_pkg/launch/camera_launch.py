@@ -115,6 +115,7 @@ def generate_launch_description():
                 "/camera/closure",
                 "/camera/contour",
                 "/camera/objects",
+                "/camera/physical_features"
                 
             ]
         }]
