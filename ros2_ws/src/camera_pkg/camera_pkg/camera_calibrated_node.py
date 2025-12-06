@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ROS2 node that:
-  - Pulls frames from an HTTP camera (single JPEG per request)
+  - Subscribes to /camera/image_raw (raw camera feed)
   - Applies fisheye undistortion + fixed center crop
   - Publishes the result as a ROS2 Image on /camera/calibrated
   - Publishes CameraInfo on /camera/calibrated/camera_info
@@ -11,9 +11,6 @@ import os
 import yaml
 import numpy as np
 import cv2
-import subprocess
-import tempfile
-import time
 
 import rclpy
 from rclpy.node import Node
@@ -24,7 +21,6 @@ from cv_bridge import CvBridge
 # ---------------------------------------------------------------
 # CONFIG (can be later turned into ROS2 parameters)
 # ---------------------------------------------------------------
-CAMERA_URL = "http://172.27.96.1:8000/frame"
 
 # FIXED CENTER CROP SIZE (pixels)
 CROP_W = 1500   # width
@@ -33,14 +29,11 @@ CROP_H = 1500   # height
 # Undistortion balance (0.0 = strongest crop / least distortion)
 BALANCE = 0.0
 
-# Frame fetch rate (Hz)
-FETCH_RATE = 5.0  # internal pull from camera
-
 # ---------------------------------------------------------------
 # GLOBAL STATS (for logging/debug)
 # ---------------------------------------------------------------
 stats = {
-    "frames_fetched": 0,
+    "frames_received": 0,
     "frames_processed": 0,
     "errors": 0
 }
@@ -97,44 +90,6 @@ map1, map2 = cv2.fisheye.initUndistortRectifyMap(
 print("[calibrated_camera_node] ✓ Undistortion maps ready")
 
 # ---------------------------------------------------------------
-# HELPER: CAPTURE ONE FRAME
-# ---------------------------------------------------------------
-def get_frame():
-    """Capture a single JPEG frame from the camera via HTTP."""
-    global stats
-
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
-        tmp_path = tmp_file.name
-
-    try:
-        subprocess.run(
-            ["curl", "-s", "-o", tmp_path, CAMERA_URL],
-            timeout=5,
-            capture_output=True
-        )
-
-        img = cv2.imread(tmp_path)
-        os.unlink(tmp_path)
-
-        if img is None:
-            stats["errors"] += 1
-            return None
-
-        # Ensure size matches calibration
-        if img.shape[1] != W or img.shape[0] != H:
-            img = cv2.resize(img, (W, H))
-
-        stats["frames_fetched"] += 1
-        return img
-
-    except Exception as e:
-        stats["errors"] += 1
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        print(f"[calibrated_camera_node] Error fetching frame: {e}")
-        return None
-
-# ---------------------------------------------------------------
 # HELPER: UNDISTORT + FIXED CENTER CROP
 # ---------------------------------------------------------------
 def undistort_and_center_crop(img):
@@ -143,6 +98,10 @@ def undistort_and_center_crop(img):
 
     if img is None:
         return None, None, None, None
+
+    # Ensure size matches calibration
+    if img.shape[1] != W or img.shape[0] != H:
+        img = cv2.resize(img, (W, H))
 
     und = cv2.remap(img, map1, map2, cv2.INTER_LINEAR)
 
@@ -176,10 +135,9 @@ class CalibratedCameraNode(Node):
         self.get_logger().info("=" * 60)
         self.get_logger().info("Calibrated Center-Crop Image ROS2 Node")
         self.get_logger().info("=" * 60)
-        self.get_logger().info(f"Camera URL:  {CAMERA_URL}")
-        self.get_logger().info(f"Fetch Rate:  {FETCH_RATE} Hz")
-        self.get_logger().info(f"Crop Size:   {CROP_W} × {CROP_H}")
-        self.get_logger().info(f"YAML Path:   {YAML_PATH}")
+        self.get_logger().info(f"Subscribing to:  /camera/image_raw")
+        self.get_logger().info(f"Crop Size:       {CROP_W} × {CROP_H}")
+        self.get_logger().info(f"YAML Path:       {YAML_PATH}")
         self.get_logger().info("=" * 60)
         self.get_logger().info("Publishing Image on:       /camera/calibrated")
         self.get_logger().info("Publishing CameraInfo on:  /camera/calibrated/camera_info")
@@ -188,6 +146,14 @@ class CalibratedCameraNode(Node):
         # Publishers
         self.image_pub = self.create_publisher(Image, "/camera/calibrated", 10)
         self.cinfo_pub = self.create_publisher(CameraInfo, "/camera/calibrated/camera_info", 10)
+
+        # Subscriber
+        self.image_sub = self.create_subscription(
+            Image,
+            "/camera/image_raw",
+            self.image_callback,
+            10
+        )
 
         self.bridge = CvBridge()
 
@@ -202,9 +168,6 @@ class CalibratedCameraNode(Node):
 
         # Prepare CameraInfo for the rectified, cropped image
         self.camera_info = self._create_camera_info()
-
-        # Timer for periodic frame acquisition and publishing
-        self.timer = self.create_timer(1.0 / FETCH_RATE, self.timer_callback)
 
     def _create_camera_info(self):
         """
@@ -249,38 +212,49 @@ class CalibratedCameraNode(Node):
 
         return cinfo
 
-    def timer_callback(self):
-        start_time = time.time()
+    def image_callback(self, msg):
+        """Callback for incoming raw camera images."""
+        global stats
+        
+        stats["frames_received"] += 1
 
-        img = get_frame()
-        if img is None:
-            self.get_logger().warn("Failed to fetch frame")
+        try:
+            # Convert ROS Image to OpenCV format
+            img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as e:
+            self.get_logger().error(f"Failed to convert image: {e}")
+            stats["errors"] += 1
             return
 
+        # Apply undistortion and crop
         calibrated, _, _, _ = undistort_and_center_crop(img)
         if calibrated is None:
             self.get_logger().warn("Failed to undistort/crop frame")
+            stats["errors"] += 1
             return
 
-        # Convert to ROS Image
-        msg = self.bridge.cv2_to_imgmsg(calibrated, encoding="bgr8")
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "camera_calibrated"  # adjust as needed
+        # Convert back to ROS Image
+        try:
+            out_msg = self.bridge.cv2_to_imgmsg(calibrated, encoding="bgr8")
+            out_msg.header.stamp = msg.header.stamp  # Preserve original timestamp
+            out_msg.header.frame_id = "camera_calibrated"
 
-        # Set timestamp on CameraInfo and publish
-        cinfo = self.camera_info
-        cinfo.header.stamp = msg.header.stamp
-        cinfo.header.frame_id = msg.header.frame_id
+            # Set timestamp on CameraInfo and publish
+            cinfo = self.camera_info
+            cinfo.header.stamp = out_msg.header.stamp
+            cinfo.header.frame_id = out_msg.header.frame_id
 
-        self.image_pub.publish(msg)
-        self.cinfo_pub.publish(cinfo)
+            self.image_pub.publish(out_msg)
+            self.cinfo_pub.publish(cinfo)
 
-        elapsed = time.time() - start_time
-        self.get_logger().debug(
-            f"Published calibrated frame. dt={elapsed:.3f}s, "
-            f"fetched={stats['frames_fetched']}, processed={stats['frames_processed']}, "
-            f"errors={stats['errors']}"
-        )
+            self.get_logger().debug(
+                f"Published calibrated frame. "
+                f"received={stats['frames_received']}, processed={stats['frames_processed']}, "
+                f"errors={stats['errors']}"
+            )
+        except Exception as e:
+            self.get_logger().error(f"Failed to publish calibrated image: {e}")
+            stats["errors"] += 1
 
 # ---------------------------------------------------------------
 # MAIN
