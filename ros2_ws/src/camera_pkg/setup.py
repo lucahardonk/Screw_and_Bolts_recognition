@@ -39,6 +39,7 @@ setup(
             'grey_scaled_node = camera_pkg.grey_scaled_node:main',
             'otsu_node = camera_pkg.otsu_thresholding:main',
             'morphological_closure_node = camera_pkg.morphological_closure:main',
+            'contour_detection_node = camera_pkg.contour_detection_node:main',
 
         ],
     },

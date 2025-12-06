@@ -61,7 +61,7 @@ def generate_launch_description():
         executable='camera_visualizer_node',
         name='camera_visualizer_node',
         output='screen',
-        parameters=[{"topics": ["/camera/calibrated", "/camera/gaussian_blurred", "/camera/canny", "/camera/background_removed", "/camera/background_grayed", "/camera/otsu", "/camera/closure"]}]
+        parameters=[{"topics": ["/camera/calibrated", "/camera/gaussian_blurred", "/camera/canny", "/camera/background_removed", "/camera/background_grayed", "/camera/otsu", "/camera/closure", "/camera/contour"]}]
     )
 
     
