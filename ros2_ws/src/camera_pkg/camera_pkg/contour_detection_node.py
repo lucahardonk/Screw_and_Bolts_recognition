@@ -25,13 +25,7 @@ ROS2 PARAMETERS:
 - min_contour_area: Minimum contour area to draw (default: 100)
 
 EXAMPLE RUN:
-ros2 run camera_pkg contour_detection_node --ros-args \
-    -p input_image_topic:=/camera/closure \
-    -p output_image_topic:=/camera/contour \
-    -p output_binary_topic:=/camera/contour/binary_mask \
-    -p contour_color_g:=255 \
-    -p contour_thickness:=2 \
-    -p min_contour_area:=100.0
+ros2 run camera_pkg contour_detection_node --ros-args  -p input_image_topic:=/camera/closure -p output_image_topic:=/camera/contour -p output_binary_topic:=/camera/contour/binary_mask -p contour_color_g:=255 -p contour_thickness:=2 -p min_contour_area:=100.0
 """
 
 import cv2

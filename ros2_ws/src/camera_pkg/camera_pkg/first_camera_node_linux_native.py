@@ -3,8 +3,24 @@ import cv2
 import time
 from flask import Flask, Response, jsonify
 from threading import Thread, Lock
-import platform
 import logging
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image, CompressedImage
+from std_msgs.msg import String
+from cv_bridge import CvBridge
+
+#debugging
+import sys, os, cv2, subprocess
+
+print("=== DEBUG ENV ===", flush=True)
+print("sys.executable:", sys.executable, flush=True)
+print("cwd:", os.getcwd(), flush=True)
+print("cv2.__file__:", cv2.__file__, flush=True)
+print("id:", subprocess.getoutput("id"), flush=True)
+print("video devices:\n", subprocess.getoutput("ls -l /dev/video* 2>&1 || echo \"no /dev/video*\""), flush=True)
+print("===============\n", flush=True)
 
 # -------------------------
 # LOGGING SETUP
@@ -32,42 +48,26 @@ TARGET_FPS = 15
 STREAM_QUALITY = 70  # JPEG quality for stream (0-100)
 SNAPSHOT_QUALITY = 100  # JPEG quality for snapshots
 
-# Detect OS
-IS_WINDOWS = platform.system() == "Windows"
-IS_LINUX = platform.system() == "Linux"
-
-logger.info(f"Running on: {platform.system()}")
+logger.info("Running on: Linux")
 
 # -------------------------
 # CAMERA DETECTION
 # -------------------------
 def find_camera():
     """
-    Try to find any working camera from /dev/video* (Linux/WSL)
-    or from index 0-9 (Windows).
+    Try to find any working camera from /dev/video* (Linux)
     """
     logger.info("Searching for camera...")
 
-    if IS_LINUX:
-        # Try /dev/video indices 0-9
-        for i in range(10):
-            cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    logger.info(f"Linux camera found at index {i}")
-                    return i, cap
-                cap.release()
-    else:
-        # Windows fallback
-        for i in range(10):
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)  # DirectShow for Windows
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    logger.info(f"Windows camera found at index {i}")
-                    return i, cap
-                cap.release()
+    # Try /dev/video indices 0-9
+    for i in range(10):
+        cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                logger.info(f"Linux camera found at index {i}")
+                return i, cap
+            cap.release()
 
     raise RuntimeError("No working camera found")
 
@@ -114,63 +114,49 @@ def initialize_camera():
 def configure_camera_parameters(cap):
     """Configure camera parameters for optimal image quality"""
     
-    if IS_LINUX:
-        logger.info("Configuring Linux camera parameters...")
-        
-        # CRITICAL FIX: Enable auto exposure (3 = aperture priority mode)
-        # 1 = manual, 3 = auto
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
-        logger.info(f"Auto Exposure: {cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)}")
-        
-        # Enable auto white balance
-        cap.set(cv2.CAP_PROP_AUTO_WB, 1)
-        
-        # If you want manual exposure, uncomment these:
-        # cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual mode
-        # cap.set(cv2.CAP_PROP_EXPOSURE, 156)  # Exposure time (higher = brighter)
-        
-        # Brightness (range typically -64 to 64, default 0)
-        cap.set(cv2.CAP_PROP_BRIGHTNESS, 0)
-        
-        # Contrast (range typically 0 to 64, default 32)
-        cap.set(cv2.CAP_PROP_CONTRAST, 32)
-        
-        # Saturation (range typically 0 to 128, default 64)
-        cap.set(cv2.CAP_PROP_SATURATION, 64)
-        
-        # Sharpness (range typically 0 to 6, default 3)
-        cap.set(cv2.CAP_PROP_SHARPNESS, 3)
-        
-        # Gain (range typically 0 to 100)
-        cap.set(cv2.CAP_PROP_GAIN, 0)  # Let auto-exposure handle this
-        
-        # Log actual values
-        logger.info(f"Brightness: {cap.get(cv2.CAP_PROP_BRIGHTNESS)}")
-        logger.info(f"Contrast: {cap.get(cv2.CAP_PROP_CONTRAST)}")
-        logger.info(f"Saturation: {cap.get(cv2.CAP_PROP_SATURATION)}")
-        logger.info(f"Sharpness: {cap.get(cv2.CAP_PROP_SHARPNESS)}")
-        logger.info(f"Gain: {cap.get(cv2.CAP_PROP_GAIN)}")
-        
-    else:
-        logger.info("Configuring Windows camera parameters...")
-        
-        # Windows auto-exposure
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)  # 0.25 = manual, 0.75 = auto
-        
-        # Auto white balance
-        cap.set(cv2.CAP_PROP_AUTO_WB, 1)
-        
-        # Brightness, contrast, saturation
-        cap.set(cv2.CAP_PROP_BRIGHTNESS, 128)  # Windows range typically 0-255
-        cap.set(cv2.CAP_PROP_CONTRAST, 128)
-        cap.set(cv2.CAP_PROP_SATURATION, 128)
+    logger.info("Configuring Linux camera parameters...")
+    
+    # CRITICAL FIX: Enable auto exposure (3 = aperture priority mode)
+    # 1 = manual, 3 = auto
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
+    logger.info(f"Auto Exposure: {cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)}")
+    
+    # Enable auto white balance
+    cap.set(cv2.CAP_PROP_AUTO_WB, 1)
+    
+    # If you want manual exposure, uncomment these:
+    # cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual mode
+    # cap.set(cv2.CAP_PROP_EXPOSURE, 156)  # Exposure time (higher = brighter)
+    
+    # Brightness (range typically -64 to 64, default 0)
+    cap.set(cv2.CAP_PROP_BRIGHTNESS, 0)
+    
+    # Contrast (range typically 0 to 64, default 32)
+    cap.set(cv2.CAP_PROP_CONTRAST, 32)
+    
+    # Saturation (range typically 0 to 128, default 64)
+    cap.set(cv2.CAP_PROP_SATURATION, 64)
+    
+    # Sharpness (range typically 0 to 6, default 3)
+    cap.set(cv2.CAP_PROP_SHARPNESS, 3)
+    
+    # Gain (range typically 0 to 100)
+    cap.set(cv2.CAP_PROP_GAIN, 0)  # Let auto-exposure handle this
+    
+    # Log actual values
+    logger.info(f"Brightness: {cap.get(cv2.CAP_PROP_BRIGHTNESS)}")
+    logger.info(f"Contrast: {cap.get(cv2.CAP_PROP_CONTRAST)}")
+    logger.info(f"Saturation: {cap.get(cv2.CAP_PROP_SATURATION)}")
+    logger.info(f"Sharpness: {cap.get(cv2.CAP_PROP_SHARPNESS)}")
+    logger.info(f"Gain: {cap.get(cv2.CAP_PROP_GAIN)}")
 
 # -------------------------
 # THREADED CAPTURE
 # -------------------------
 class CameraThread:
-    def __init__(self, cap):
+    def __init__(self, cap, ros_node=None):
         self.cap = cap
+        self.ros_node = ros_node
         self.full_frame = None
         self.stream_jpeg = None
         self.lock = Lock()
@@ -216,6 +202,10 @@ class CameraThread:
             # Store full resolution frame
             with self.lock:
                 self.full_frame = frame.copy()
+            
+            # Publish to ROS2 if node is available
+            if self.ros_node is not None:
+                self.ros_node.publish_frame(frame)
             
             # Create stream frame (lower resolution)
             stream_frame = cv2.resize(frame, (STREAM_WIDTH, STREAM_HEIGHT), 
@@ -263,10 +253,81 @@ class CameraThread:
         logger.info("Camera capture thread stopped")
 
 # -------------------------
+# ROS2 NODE
+# -------------------------
+class CameraStreamNode(Node):
+    def __init__(self):
+        super().__init__('camera_stream_node')
+        
+        # Declare parameters
+        self.declare_parameter('camera_name', CAMERA_NAME)
+        self.declare_parameter('port', PORT)
+        self.declare_parameter('full_width', FULL_WIDTH)
+        self.declare_parameter('full_height', FULL_HEIGHT)
+        self.declare_parameter('stream_width', STREAM_WIDTH)
+        self.declare_parameter('stream_height', STREAM_HEIGHT)
+        self.declare_parameter('target_fps', TARGET_FPS)
+        
+        # Get parameters
+        self.camera_name = self.get_parameter('camera_name').value
+        self.port = self.get_parameter('port').value
+        
+        self.get_logger().info(f'Camera Stream Node initialized')
+        self.get_logger().info(f'Camera: {self.camera_name}')
+        self.get_logger().info(f'Web server port: {self.port}')
+        
+        # Create publishers
+        self.image_pub = self.create_publisher(Image, 'camera/image_raw', 10)
+        self.compressed_pub = self.create_publisher(CompressedImage, 'camera/image_raw/compressed', 10)
+        self.info_pub = self.create_publisher(String, 'camera/info', 10)
+        
+        # CV Bridge for ROS2 image conversion
+        self.bridge = CvBridge()
+        
+        # Timer for publishing camera info
+        self.create_timer(1.0, self.publish_info)
+        
+        self.get_logger().info('ROS2 publishers created')
+    
+    def publish_frame(self, frame):
+        """Publish frame to ROS2 topics"""
+        try:
+            # Publish raw image
+            img_msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
+            img_msg.header.stamp = self.get_clock().now().to_msg()
+            img_msg.header.frame_id = 'camera_frame'
+            self.image_pub.publish(img_msg)
+            
+            # Publish compressed image
+            compressed_msg = CompressedImage()
+            compressed_msg.header = img_msg.header
+            compressed_msg.format = 'jpeg'
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, STREAM_QUALITY]
+            ret, buffer = cv2.imencode('.jpg', frame, encode_params)
+            if ret:
+                compressed_msg.data = buffer.tobytes()
+                self.compressed_pub.publish(compressed_msg)
+        except Exception as e:
+            self.get_logger().error(f'Error publishing frame: {e}')
+    
+    def publish_info(self):
+        """Publish camera info periodically"""
+        if camera_thread is not None:
+            info_msg = String()
+            info_msg.data = f"FPS: {camera_thread.get_fps():.1f}, Resolution: {actual_width}x{actual_height}"
+            self.info_pub.publish(info_msg)
+
+# -------------------------
 # INITIALIZE CAMERA
 # -------------------------
 CAM_INDEX, cap, actual_width, actual_height = initialize_camera()
-camera_thread = CameraThread(cap)
+
+# Initialize ROS2
+rclpy.init()
+ros_node = CameraStreamNode()
+
+# Create camera thread with ROS2 node
+camera_thread = CameraThread(cap, ros_node)
 
 # Give camera time to adjust exposure
 logger.info("Waiting for camera to adjust exposure...")
@@ -332,6 +393,15 @@ def index():
                 font-weight: bold;
                 color: #28a745;
             }}
+            .ros-badge {{
+                display: inline-block;
+                background: #22863a;
+                color: white;
+                padding: 5px 10px;
+                border-radius: 3px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
         </style>
         <script>
             function updateFPS() {{
@@ -347,13 +417,19 @@ def index():
         </script>
     </head>
     <body>
-        <h1>🎥 Camera Stream</h1>
+        <h1>🎥 Camera Stream <span class="ros-badge">ROS2</span></h1>
         
         <div class="info">
             <p><strong>Camera Resolution:</strong> {actual_width}x{actual_height}</p>
             <p><strong>Stream Resolution:</strong> {STREAM_WIDTH}x{STREAM_HEIGHT}</p>
             <p><strong>Current FPS:</strong> <span id="fps">--</span></p>
-            <p><strong>Platform:</strong> {platform.system()}</p>
+            <p><strong>Platform:</strong> Linux</p>
+            <p><strong>ROS2 Topics:</strong></p>
+            <ul>
+                <li><code>/camera/image_raw</code> - Raw image stream</li>
+                <li><code>/camera/image_raw/compressed</code> - Compressed image stream</li>
+                <li><code>/camera/info</code> - Camera information</li>
+            </ul>
         </div>
         
         <div class="stream-container">
@@ -403,8 +479,13 @@ def stats():
             "full": f"{actual_width}x{actual_height}",
             "stream": f"{STREAM_WIDTH}x{STREAM_HEIGHT}"
         },
-        "platform": platform.system(),
-        "camera_index": CAM_INDEX
+        "platform": "Linux",
+        "camera_index": CAM_INDEX,
+        "ros2_topics": {
+            "raw": "/camera/image_raw",
+            "compressed": "/camera/image_raw/compressed",
+            "info": "/camera/info"
+        }
     })
 
 # -------------------------
@@ -415,6 +496,8 @@ def cleanup():
     logger.info("Cleaning up...")
     camera_thread.stop()
     cap.release()
+    ros_node.destroy_node()
+    rclpy.shutdown()
     logger.info("Cleanup complete")
 
 import atexit
@@ -423,12 +506,23 @@ atexit.register(cleanup)
 # -------------------------
 # MAIN
 # -------------------------
-if __name__ == "__main__":
+def main():
+    """Main function to run both Flask and ROS2"""
+    # Start Flask in a separate thread
+    flask_thread = Thread(target=lambda: app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True), daemon=True)
+    flask_thread.start()
+    
+    logger.info(f"Server starting on http://0.0.0.0:{PORT}")
+    logger.info(f"Access from browser: http://localhost:{PORT}")
+    logger.info("ROS2 node spinning...")
+    
     try:
-        logger.info(f"Server starting on http://0.0.0.0:{PORT}")
-        logger.info(f"Access from browser: http://localhost:{PORT}")
-        app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+        # Spin ROS2 node in main thread
+        rclpy.spin(ros_node)
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")
     finally:
         cleanup()
+
+if __name__ == "__main__":
+    main()

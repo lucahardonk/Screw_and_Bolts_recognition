@@ -40,6 +40,8 @@ setup(
             'otsu_node = camera_pkg.otsu_thresholding:main',
             'morphological_closure_node = camera_pkg.morphological_closure:main',
             'contour_detection_node = camera_pkg.contour_detection_node:main',
+            'min_rect_area_node = camera_pkg.min_rect_area:main',
+            'first_camera_node_linux_native = camera_pkg.first_camera_node_linux_native:main',
 
         ],
     },

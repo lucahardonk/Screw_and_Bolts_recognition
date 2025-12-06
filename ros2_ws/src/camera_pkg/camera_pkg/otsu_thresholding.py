@@ -11,9 +11,7 @@ ROS2 PARAMETERS:
 - output_image_topic: Output binary image topic (default: /camera/otsu)
 
 EXAMPLE RUN:
-ros2 run camera_pkg otsu_node --ros-args \
-    -p input_image_topic:=/camera/background_grayed \
-    -p output_image_topic:=/camera/otsu
+ros2 run camera_pkg otsu_node --ros-args -p input_image_topic:=/camera/background_grayed -p output_image_topic:=/camera/otsu
 """
 
 import cv2

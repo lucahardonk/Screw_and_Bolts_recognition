@@ -5,22 +5,15 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    # --- Run Windows camera script directly (not in wsl) ---
-    windows_path = r"%USERPROFILE%\Documents\Projects\Screw_and_Bolts_recognition\ros2_ws\src\camera_pkg\camera_pkg\first_camera_node_windows_native.py"
-
-    windows_camera = ExecuteProcess(
-        cmd=[
-            "cmd.exe", "/C",
-            "python",
-            windows_path
-        ],
-        shell=False
+    # --- Run Linux camera node by absolute path (same as your working command) ---
+    linux_camera = Node(
+        package='camera_pkg',
+        executable='first_camera_node_linux_native',
+        name='first_camera_node_linux_native',
+        output='screen',
+        parameters=[]
     )
 
-    #delay 5 second with TimerAction delayed_camera_calibrated
-
-    # --- camera_calibrated_node ---
-    # this node performs camera calibration using the provided parameters YAML file
     camera_calibrated_node = Node(
         package='camera_pkg',
         executable='camera_calibrated_node',
@@ -29,7 +22,6 @@ def generate_launch_description():
         parameters=[]
     )
 
-    # --- background_removal_node ---
     background_removal_node = Node(
         package='camera_pkg',
         executable='background_removal_node',
@@ -41,7 +33,6 @@ def generate_launch_description():
         ]
     )
 
-    # --- grey_scaled_node ---
     grey_scaled_node = Node(
         package='camera_pkg',
         executable='grey_scaled_node',
@@ -53,35 +44,98 @@ def generate_launch_description():
         ]
     )
 
+    
+    otsu_node = Node(
+        package='camera_pkg',
+        executable='otsu_node',
+        name='otsu_node',
+        output='screen',
+        parameters=[
+            {"input_image_topic": "/camera/background_grayed"},
+            {"output_image_topic": "/camera/otsu"}
+        ]
+    )
 
-    # --- camera_visualizer_node ---
-    # localhost web gui to visualize each camera topic
+
+    morphological_closure_node = Node(
+        package='camera_pkg',
+        executable='morphological_closure_node',
+        name='morphological_closure_node',
+        output='screen',
+        parameters=[
+            {"input_image_topic": "/camera/otsu"},
+            {"output_image_topic": "/camera/closure"},
+            {"kernel_size": 5},
+            {"iterations": 2},
+        ]
+    )
+
+
+    contour_detection_node = Node(
+        package='camera_pkg',
+        executable='contour_detection_node',
+        name='contour_detection_node',
+        output='screen',
+        parameters=[
+            {"input_image_topic": "/camera/closure"},
+            {"output_image_topic": "/camera/contour"},
+            {"output_binary_topic": "/camera/contour/binary_mask"},
+            {"contour_color_g": 255},
+            {"contour_thickness": 2},
+            {"min_contour_area": 100.0},
+        ]
+    )
+
+    min_rect_area_node = Node(
+        package='camera_pkg',
+        executable='min_rect_area_node',
+        name='min_rect_area_node',
+        output='screen',
+        parameters=[
+            {"input_image_topic": "/camera/closure"},
+            {"output_image_topic": "/camera/objects"},
+            {"output_info_topic": "/camera/object_information"},
+            {"min_contour_area": 500.0},
+        ]
+    )
+
     camera_visualizer_node = Node(
         package='camera_pkg',
         executable='camera_visualizer_node',
         name='camera_visualizer_node',
         output='screen',
-        parameters=[{"topics": ["/camera/calibrated", "/camera/gaussian_blurred", "/camera/canny", "/camera/background_removed", "/camera/background_grayed", "/camera/otsu", "/camera/closure", "/camera/contour"]}]
+        parameters=[{
+            "topics": [
+                "/camera/calibrated",
+                "/camera/gaussian_blurred",
+                "/camera/canny",
+                "/camera/background_removed",
+                "/camera/background_grayed",
+                "/camera/otsu",
+                "/camera/closure",
+                "/camera/contour",
+                "/camera/objects",
+                
+            ]
+        }]
     )
 
-    
-
-
-
-
-    # Add 5 second delay after launch start before camera_calibrated_node
     delayed_camera_calibrated = TimerAction(
         period=5.0,
         actions=[camera_calibrated_node]
     )
-    
 
     return LaunchDescription([
-        windows_camera,           # starts immediately
-        delayed_camera_calibrated, # starts 5s after launch
+        linux_camera,
+        delayed_camera_calibrated,
         background_removal_node,
         grey_scaled_node,
 
+        # add here (in order)
+        otsu_node,
+        morphological_closure_node,
+        contour_detection_node,
+        min_rect_area_node,
 
-        camera_visualizer_node,    
+        camera_visualizer_node,
     ])
