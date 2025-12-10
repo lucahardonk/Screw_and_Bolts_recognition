@@ -365,3 +365,43 @@ ros2 run camera_pkg canny_edge_node --ros-args -p input_image_topic:=/camera/cal
 ------------------------------------------------------------------------
 
 
+
+
+# 3 Arduino Control Package
+
+This ROS2 package provides service-based control for Arduino-connected servos and RGB LEDs over serial communication. The `arduino_control_node` establishes a serial connection to an Arduino and exposes two services: `/set_servo` for controlling servo positions (0-180 degrees) and `/set_light_color` for setting RGB LED colors (0-255 per channel). The package uses custom service definitions from `services_pkg` and communicates with the Arduino using a simple text-based protocol.  
+  
+### Example Usage  
+  
+**Control Servos:**  
+```bash  
+# Move servo 1 to 90 degrees  
+ros2 service call /set_servo services_pkg/srv/SetServo "{servo_id: 1, position: 90}"  
+  
+# Move servo 2 to 45 degrees  
+ros2 service call /set_servo services_pkg/srv/SetServo "{servo_id: 2, position: 45}"
+
+### Control RGB LEDs:  
+```bash
+# Set LED to red
+ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 1, r: 255, g: 0, b: 0}"
+
+# Set LED to purple
+ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 1, r: 128, g: 0, b: 128}"
+
+# Turn LED off
+ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 1, r: 0, g: 0, b: 0}"
+```
+### Run the node:
+```bash
+ros2 run arduino_control_pkg arduino_control_server
+```
+
+# 4 Services Package
+
+This package defines custom ROS2 service interfaces used for hardware control across the project. It contains two service definitions: `SetServo.srv` for controlling servo motor positions and `SetLightColor.srv` for controlling RGB LED colors. This is a pure interface package that generates service message types for both Python and C++ nodes, following ROS2 best practices of separating interface definitions from implementation code.  
+  
+### Service Definitions  
+  
+**SetServo.srv** - Controls servo motor position
+**SetLightColor.srv** - Controls RGB LED color

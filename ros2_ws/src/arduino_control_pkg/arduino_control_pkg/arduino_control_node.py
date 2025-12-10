@@ -7,6 +7,16 @@ import serial.tools.list_ports
 
 from services_pkg.srv import SetServo, SetLightColor
 
+'''
+example service calls:
+ros2 service call /set_servo services_pkg/srv/SetServo "{servo_id: 1, position: 90}"
+ros2 service call /set_servo services_pkg/srv/SetServo "{servo_id: 2, position: 180}"
+
+ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 1, r: 255, g: 0, b: 0}"
+ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 1, r: 0, g: 255, b: 0}"
+ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 1, r: 0, g: 0, b: 255}"
+'''
+
 class ArduinoControlNode(Node):
     def __init__(self):
         super().__init__('arduino_control_node')
