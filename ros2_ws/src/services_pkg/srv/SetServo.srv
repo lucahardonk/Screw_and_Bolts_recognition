@@ -1,0 +1,7 @@
+#Request
+uint8 servo_id
+uint8 position
+---
+#Response
+bool success
+string message
