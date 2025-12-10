@@ -1,0 +1,8 @@
+#Request
+uint8 light_id
+uint8 r
+uint8 g
+uint8 b
+---
+bool success
+string message
