@@ -378,38 +378,58 @@ class PhysicalFeaturesNode(Node):
                     )
 
                     # ---------------------------------------------------
-                    # 5.3 Compute body diameter and length
+                    # 5.3 Determine body region (smaller diameter side)
                     # ---------------------------------------------------
-                    # Body is the region AFTER the separation line
-                    body_slice_widths = slice_widths_smooth[separation_idx + 1:]
-                    if len(body_slice_widths) > 0:
-                        body_diameter_px = np.mean(body_slice_widths)
-                        body_diameter_mm = body_diameter_px * self.pixel_to_mm_ratio
-                    else:
-                        body_diameter_mm = 0.0
+                    before = slice_widths_smooth[:separation_idx + 1]      # side A
+                    after  = slice_widths_smooth[separation_idx + 1:]      # side B
 
-                    body_length_px = max_v0 - separation_pos
+                    if len(before) == 0 or len(after) == 0:
+                        # Fallback: treat everything as body
+                        body_slice_widths = slice_widths_smooth
+                        body_start_idx = 0
+                        body_end_idx = n - 1
+                    else:
+                        mean_before = float(np.mean(before))
+                        mean_after  = float(np.mean(after))
+
+                        # Body = side with smaller average width (thinner region)
+                        if mean_before < mean_after:
+                            body_slice_widths = before
+                            body_start_idx = 0
+                            body_end_idx = separation_idx
+                        else:
+                            body_slice_widths = after
+                            body_start_idx = separation_idx + 1
+                            body_end_idx = n - 1
+
+                    # Body diameter (px → mm)
+                    body_diameter_px = float(np.mean(body_slice_widths)) if len(body_slice_widths) > 0 else 0.0
+                    body_diameter_mm = body_diameter_px * self.pixel_to_mm_ratio
+
+                    # Body length along principal axis (px → mm)
+                    body_start_pos = slice_positions[body_start_idx]
+                    body_end_pos   = slice_positions[body_end_idx]
+                    body_length_px = abs(body_end_pos - body_start_pos)
                     body_length_mm = body_length_px * self.pixel_to_mm_ratio
 
                     # ---------------------------------------------------
-                    # 5.3.1 Calculate pick-up point (center of body region)
+                    # 5.3.1 Pick‑up point = center of the body region
                     # ---------------------------------------------------
-                    # Pick-up point is at the center of the body (midpoint between separation line and tail end)
-                    pick_up_pos = (separation_pos + max_v0) / 2.0
-                    pick_up_world = mean[0] + pick_up_pos * v0
+                    body_center_pos = 0.5 * (body_start_pos + body_end_pos)
+                    pick_up_world = mean[0] + body_center_pos * v0
                     pick_up_x = int(pick_up_world[0])
                     pick_up_y = int(pick_up_world[1])
 
-                    # Draw pick-up point as GREEN dot
+                    # Draw pick-up point as GREEN dot (only in body region)
                     cv2.circle(
                         output_image,
                         (pick_up_x, pick_up_y),
-                        5,  # slightly larger radius
+                        5,  # radius
                         (0, 255, 0),  # green
-                        -1  # filled
+                        -1
                     )
 
-                    # Optional: Draw a small cross for better visibility
+                    # Optional cross for visibility
                     cross_size = 8
                     cv2.line(
                         output_image,
