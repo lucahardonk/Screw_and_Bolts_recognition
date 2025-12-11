@@ -391,17 +391,11 @@ class PhysicalFeaturesNode(Node):
                     body_length_px = max_v0 - separation_pos
                     body_length_mm = body_length_px * self.pixel_to_mm_ratio
 
-                    # Body center (for reference, not drawn)
-                    body_center_pos = (separation_pos + max_v0) / 2.0
-                    body_center_world = mean[0] + body_center_pos * v0
-                    body_cx = int(body_center_world[0])
-                    body_cy = int(body_center_world[1])
-
                     # ---------------------------------------------------
-                    # 5.3.1 Calculate pick-up point (between separation line and body center)
+                    # 5.3.1 Calculate pick-up point (center of body region)
                     # ---------------------------------------------------
-                    # Pick-up point is midway between separation line and body center
-                    pick_up_pos = (separation_pos + body_center_pos) / 2.0
+                    # Pick-up point is at the center of the body (midpoint between separation line and tail end)
+                    pick_up_pos = (separation_pos + max_v0) / 2.0
                     pick_up_world = mean[0] + pick_up_pos * v0
                     pick_up_x = int(pick_up_world[0])
                     pick_up_y = int(pick_up_world[1])
