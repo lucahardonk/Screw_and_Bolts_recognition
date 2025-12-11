@@ -127,7 +127,8 @@ def generate_launch_description():
                 "/camera/closure",
                 "/camera/contour",
                 "/camera/objects",
-                "/camera/physical_features"
+                "/camera/physical_features",
+                
                 
             ]
         }]
@@ -147,7 +148,8 @@ def generate_launch_description():
         morphological_closure_node,
         contour_detection_node,
         min_rect_area_node,
-        physical_features_node,
+        #physical_features_node,
+        
 
         camera_visualizer_node,
     ])
