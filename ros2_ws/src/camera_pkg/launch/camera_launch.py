@@ -99,6 +99,18 @@ def generate_launch_description():
         ]
     )
 
+    physical_features_node = Node(
+        package='camera_pkg',
+        executable='physical_features_node',
+        name='physical_features_node',
+        output='screen',
+        parameters=[
+            {"input_image_topic": "/camera/closure"},
+            {"input_info_topic": "/camera/object_information"},
+            {"output_image_topic": "/camera/physical_features"},
+        ]
+    )
+
     camera_visualizer_node = Node(
         package='camera_pkg',
         executable='camera_visualizer_node',
@@ -131,12 +143,11 @@ def generate_launch_description():
         delayed_camera_calibrated,
         background_removal_node,
         grey_scaled_node,
-
-        # add here (in order)
         otsu_node,
         morphological_closure_node,
         contour_detection_node,
         min_rect_area_node,
+        physical_features_node,
 
         camera_visualizer_node,
     ])
