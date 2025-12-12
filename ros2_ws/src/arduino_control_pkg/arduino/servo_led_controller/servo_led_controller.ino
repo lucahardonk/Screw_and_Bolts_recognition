@@ -37,8 +37,8 @@ Example:
 // ===============================
 // CONFIGURATION
 // ===============================
-static const uint8_t CLAMP_SERVO_PIN = 9;
-static const uint8_t WRIST_SERVO_PIN = 10;
+static const uint8_t CLAMP_SERVO_PIN = 9; // id 1
+static const uint8_t WRIST_SERVO_PIN = 10;  // id 2
 
 static const uint8_t NEOPIXEL_PIN = 6;
 static const uint8_t NUM_LEDS     = 8;
@@ -57,8 +57,8 @@ static const int SERVO_LIB_MAX = 180;
 // ===============================
 // GLOBAL OBJECTS
 // ===============================
-Servo clamp_servo;
-Servo wrist_servo;
+Servo clamp_servo; // id 1
+Servo wrist_servo; // id 2
 
 Adafruit_NeoPixel strip(NUM_LEDS, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -70,16 +70,22 @@ String inputLine = "";
 
 // Maps 0–180 (serial input) → 0–270 (real servo) → 0–180 (library)
 int mapServoAngle(int inputAngle) {
-  inputAngle = constrain(inputAngle, 0, MAX_SERIAL_ANGLE);
+  inputAngle = constrain(inputAngle, 0, 180);
 
-  int physicalAngle = map(inputAngle, 
-                          0, MAX_SERIAL_ANGLE, 
-                          SERVO_MIN_DEG, SERVO_MAX_DEG);
+  // 1) Map 0–180 → 40–230 real degrees
+  int realAngle = map(inputAngle,
+                      0, 180,
+                      40, 230);
 
-  return map(physicalAngle,
-             SERVO_MIN_DEG, SERVO_MAX_DEG,
-             SERVO_LIB_MIN, SERVO_LIB_MAX);
+  // 2) Convert real 40–230 → library 0–180
+  int libAngle = map(realAngle,
+                     0, 270,
+                     0, 180);
+
+  return libAngle;
 }
+
+
 
 void setServo(uint8_t id, int serialAngle) {
   int mappedAngle = mapServoAngle(serialAngle);
@@ -176,7 +182,7 @@ void setup() {
   wrist_servo.attach(WRIST_SERVO_PIN);
 
   setServo(1, 0);
-  setServo(2, 0);
+  setServo(2, 90);
 
   strip.begin();
   strip.show();
