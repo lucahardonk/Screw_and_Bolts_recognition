@@ -1,4 +1,4 @@
-# Automated Screws & Bolts Sorting System cad
+# Automated Screws & Bolts Sorting System
 An automated vision-guided system that classifies screws, bolts, and nuts, estimates size/orientation, and sorts them using a 3-axis CNC machine with a custom 3D-printed gripper. Using computer vision, robotics, and modular software design, the system transforms a chaotic pile of fasteners into an organized storage layout.
 
 ## Project Architecture

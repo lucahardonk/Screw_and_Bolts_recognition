@@ -9,7 +9,7 @@ class SerialCncNode(Node):
     def __init__(self):
         super().__init__('serial_cnc_node')
 
-        self.declare_parameter('port', '/dev/ttyUSB1')
+        self.declare_parameter('port', '/dev/ttyUSB0')
         self.declare_parameter('baud_rate', 115200)
 
         self.port = self.get_parameter('port').get_parameter_value().string_value
