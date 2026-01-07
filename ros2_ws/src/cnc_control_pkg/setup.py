@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'cnc_serial_controller = cnc_control_pkg.cnc_serial_controller:main',
+            'joystick_cnc_control = cnc_control_pkg.joystick_cnc_control:main'
         ],
     },
 )
