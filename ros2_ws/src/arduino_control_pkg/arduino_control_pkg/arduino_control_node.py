@@ -9,16 +9,20 @@ import serial.tools.list_ports
 import time
 from typing import Optional
 
-from services_pkg.srv import SetServo, SetLightColor
+from std_msgs.msg import Int32
+from services_pkg.srv import SetLightColor
 
 '''
-full parameter command:
+Full parameter command:
 ros2 run arduino_control_pkg arduino_control_server --ros-args -p port:=/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -p baud:=115200 -p timeout:=1.0 -p auto_reconnect:=true
 
-Example service calls:
-ros2 service call /set_servo services_pkg/srv/SetServo "{servo_id: 1, position: 90}"
-ros2 service call /set_servo services_pkg/srv/SetServo "{servo_id: 2, position: 180}"
+Example servo control (pub/sub):
+ros2 topic pub /servo1 std_msgs/msg/Int32 "{data: 90}" --once
+ros2 topic pub /servo2 std_msgs/msg/Int32 "{data: 180}" --once
+ros2 topic pub /servo1 std_msgs/msg/Int32 "{data: 45}" --once
+ros2 topic pub /servo2 std_msgs/msg/Int32 "{data: 135}" --once
 
+Example light control (service):
 ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 0, r: 255, g: 255, b: 255}"
 ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 1, r: 0, g: 255, b: 0}"
 ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 7, r: 0, g: 0, b: 255}"
@@ -28,7 +32,7 @@ ros2 service call /set_light_color services_pkg/srv/SetLightColor "{light_id: 7,
 class ArduinoControlNode(Node):
     """
     ROS2 node for controlling Arduino via serial communication.
-    Provides services for servo control and LED color setting.
+    Provides pub/sub for servo control and services for LED color setting.
     All validation is done on the microcontroller side.
     """
     
@@ -60,14 +64,24 @@ class ArduinoControlNode(Node):
         # Create callback group for concurrent service calls
         self.callback_group = ReentrantCallbackGroup()
         
-        # Create services
-        self.servo_srv = self.create_service(
-            SetServo, 
-            'set_servo', 
-            self.handle_set_servo,
+        # Create subscribers for servo control
+        self.servo1_sub = self.create_subscription(
+            Int32,
+            'servo1',
+            self.handle_servo1_callback,
+            10,
             callback_group=self.callback_group
         )
         
+        self.servo2_sub = self.create_subscription(
+            Int32,
+            'servo2',
+            self.handle_servo2_callback,
+            10,
+            callback_group=self.callback_group
+        )
+        
+        # Create service for light control
         self.light_srv = self.create_service(
             SetLightColor, 
             'set_light_color', 
@@ -83,7 +97,8 @@ class ArduinoControlNode(Node):
             )
         
         self.get_logger().info('Arduino Control Node initialized')
-        self.get_logger().info(f'Services available: /set_servo, /set_light_color')
+        self.get_logger().info(f'Subscribed to topics: /servo1, /servo2')
+        self.get_logger().info(f'Service available: /set_light_color')
     
     def _connect_serial(self) -> bool:
         """
@@ -192,35 +207,47 @@ class ArduinoControlNode(Node):
             self.get_logger().error(msg)
             return False, msg
     
-    def handle_set_servo(self, request, response):
+    def handle_servo1_callback(self, msg):
         """
-        Service callback for setting servo position.
+        Subscriber callback for servo1 position.
         No validation - all checks done on microcontroller.
         
         Args:
-            request: SetServo request with servo_id and position
-            response: SetServo response with success and message
+            msg: Int32 message containing servo position
         """
-        servo_id = request.servo_id
-        position = request.position
+        position = msg.data
         
-        self.get_logger().info(
-            f'Received set_servo request: servo_id={servo_id}, position={position}'
-        )
+        self.get_logger().info(f'Received servo1 position: {position}')
         
         # Send command to Arduino (no validation)
-        cmd = f'SERVO,{servo_id},{position}'
+        cmd = f'SERVO,1,{position}'
         success, message = self.send_serial_command(cmd)
         
-        response.success = success
-        response.message = message
+        if success:
+            self.get_logger().info(f'Servo 1 command sent: position={position}')
+        else:
+            self.get_logger().error(f'Failed to send servo 1 command: {message}')
+    
+    def handle_servo2_callback(self, msg):
+        """
+        Subscriber callback for servo2 position.
+        No validation - all checks done on microcontroller.
+        
+        Args:
+            msg: Int32 message containing servo position
+        """
+        position = msg.data
+        
+        self.get_logger().info(f'Received servo2 position: {position}')
+        
+        # Send command to Arduino (no validation)
+        cmd = f'SERVO,2,{position}'
+        success, message = self.send_serial_command(cmd)
         
         if success:
-            self.get_logger().info(f'Servo {servo_id} command sent: position={position}')
+            self.get_logger().info(f'Servo 2 command sent: position={position}')
         else:
-            self.get_logger().error(f'Failed to send servo {servo_id} command: {message}')
-        
-        return response
+            self.get_logger().error(f'Failed to send servo 2 command: {message}')
     
     def handle_set_light(self, request, response):
         """
@@ -278,7 +305,7 @@ def main(args=None):
     try:
         node = ArduinoControlNode()
         
-        # Use MultiThreadedExecutor for concurrent service calls
+        # Use MultiThreadedExecutor for concurrent callbacks
         executor = MultiThreadedExecutor()
         executor.add_node(node)
         
