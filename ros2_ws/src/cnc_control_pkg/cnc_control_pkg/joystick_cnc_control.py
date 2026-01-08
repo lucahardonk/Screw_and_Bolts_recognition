@@ -13,11 +13,11 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
-from std_msgs.msg import String
+from std_msgs.msg import String, Int32
 from sensor_msgs.msg import Joy
 from flask import Flask, render_template_string, request, jsonify
 
-from services_pkg.srv import SetServo, SetLightColor
+from services_pkg.srv import SetLightColor
 
 
 # ============================================================================
@@ -132,6 +132,10 @@ class JoystickCncControl(Node):
         self.pub_cmd = self.create_publisher(String, '/serial_cnc_in', 10)
         self.sub_status = self.create_subscription(String, '/serial_cnc_out', self.serial_callback, 10)
         self.subscription = self.create_subscription(Joy, '/joy', self.joy_callback, 10)
+        
+        # --- Servo Publishers (Topic-based) ---
+        self.pub_servo1 = self.create_publisher(Int32, '/servo1', 10)
+        self.pub_servo2 = self.create_publisher(Int32, '/servo2', 10)
 
         # --- State ---
         self.joy_axes = [0.0] * 8
@@ -159,8 +163,7 @@ class JoystickCncControl(Node):
         # Control flags for threads
         self.running = True
 
-        # --- Services ---
-        self.servo_client = self.create_client(SetServo, '/set_servo')
+        # --- Services (Lights only) ---
         self.light_client = self.create_client(SetLightColor, '/set_light_color')
 
         # --- Thread 1: CNC Control (dedicated) ---
@@ -178,6 +181,7 @@ class JoystickCncControl(Node):
         self.get_logger().info(f"  - Thread 1: CNC Control (50Hz)")
         self.get_logger().info(f"  - Thread 2: Servo & Lights (20Hz)")
         self.get_logger().info(f"  - Thread 3: Web GUI at http://localhost:{self.web_port}")
+        self.get_logger().info(f"  - Servo control via topics: /servo1, /servo2")
 
         # --- GRBL Unlock at startup (delayed 5 seconds) ---
         threading.Timer(5.0, self.send_grbl_unlock_delayed).start()
@@ -239,31 +243,33 @@ class JoystickCncControl(Node):
             time.sleep(self.servo_update_period)
 
     def update_servos(self):
-        """Update servos based on targets"""
+        """Update servos based on targets - now using topics"""
         with self.servo_lock:
             # Only send if position changed significantly
             if abs(self.servo1_target - self.servo1_current) > 2:
-                self.set_servo(1, int(self.servo1_target))
+                self.publish_servo(1, int(self.servo1_target))
                 self.servo1_current = self.servo1_target
             
             if abs(self.servo2_target - self.servo2_current) > 2:
-                self.set_servo(2, int(self.servo2_target))
+                self.publish_servo(2, int(self.servo2_target))
                 self.servo2_current = self.servo2_target
 
-    def set_servo(self, servo_id, position):
-        """Set servo position (0-180)"""
-        if not self.servo_client.service_is_ready():
-            return
-        req = SetServo.Request()
-        req.servo_id = int(servo_id)
-        req.position = int(position)
-        self.servo_client.call_async(req)
+    def publish_servo(self, servo_id, position):
+        """Publish servo position to topic (0-180)"""
+        msg = Int32()
+        msg.data = int(position)
+        
+        if servo_id == 1:
+            self.pub_servo1.publish(msg)
+        elif servo_id == 2:
+            self.pub_servo2.publish(msg)
 
     def toggle_all_lights(self, on):
         """Turn all 8 lights on (white) or off"""
         color = (255, 255, 255) if on else (0, 0, 0)
         for light_id in range(8):
             self.set_light(light_id, *color)
+            time.sleep(0.5)
 
     def set_light(self, light_id, r, g, b):
         """Set individual light color"""
