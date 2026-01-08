@@ -148,7 +148,7 @@ def generate_launch_description():
         morphological_closure_node,
         contour_detection_node,
         min_rect_area_node,
-        #physical_features_node,
+        physical_features_node,
         
 
         camera_visualizer_node,

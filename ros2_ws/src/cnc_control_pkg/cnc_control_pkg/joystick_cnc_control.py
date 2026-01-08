@@ -133,21 +133,25 @@ class JoystickCncControl(Node):
         if len(msg.axes) >= 3:
             trigger = msg.axes[2]
             servo1_pos = int((1.0 - trigger) / 2.0 * 180)  # Map -1..1 -> 180..0
-            servo1_msg = Int32()
-            servo1_msg.data = servo1_pos
-            self.pub_servo1.publish(servo1_msg)
-            self.get_logger().debug(f"🔧 Servo1 -> {servo1_pos}° (trigger={trigger:.3f})")
+            if servo1_pos != getattr(self, 'last_servo1_pos', None):
+                servo1_msg = Int32()
+                servo1_msg.data = servo1_pos
+                self.pub_servo1.publish(servo1_msg)
+                self.get_logger().debug(f"🔧 Servo1 -> {servo1_pos}° (trigger={trigger:.3f})")
+                self.last_servo1_pos = servo1_pos
 
         # --- Servo 2: Right stick horizontal (axis 3) ---
         if len(msg.axes) >= 4:
             stick = msg.axes[3]
             if abs(stick) > self.deadzone:
                 old_pos = self.servo2_position
-                self.servo2_position = max(0, min(180, self.servo2_position + stick * 3.0))
-                servo2_msg = Int32()
-                servo2_msg.data = int(self.servo2_position)
-                self.pub_servo2.publish(servo2_msg)
-                self.get_logger().debug(f"🔧 Servo2 -> {int(self.servo2_position)}° (was {int(old_pos)}°, stick={stick:.3f})")
+                new_pos = max(0, min(180, self.servo2_position + stick * 3.0))
+                if new_pos != self.servo2_position:
+                    self.servo2_position = new_pos
+                    servo2_msg = Int32()
+                    servo2_msg.data = int(self.servo2_position)
+                    self.pub_servo2.publish(servo2_msg)
+                    self.get_logger().debug(f"🔧 Servo2 -> {int(self.servo2_position)}° (was {int(old_pos)}°, stick={stick:.3f})")
 
         # --- Lights: toggle (button index 4) ---
         if len(msg.buttons) > 4:
