@@ -17,6 +17,8 @@ Full parameter command:
 ros2 run arduino_control_pkg arduino_control_server --ros-args -p port:=/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -p baud:=115200 -p timeout:=1.0 -p auto_reconnect:=true
 
 Example servo control (pub/sub):
+servo 1: writst
+servo 2: gripper
 ros2 topic pub /servo1 std_msgs/msg/Int32 "{data: 90}" --once
 ros2 topic pub /servo2 std_msgs/msg/Int32 "{data: 180}" --once
 ros2 topic pub /servo1 std_msgs/msg/Int32 "{data: 45}" --once

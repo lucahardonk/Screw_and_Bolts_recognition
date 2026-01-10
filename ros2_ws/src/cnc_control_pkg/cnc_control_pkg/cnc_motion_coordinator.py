@@ -26,12 +26,12 @@ from typing import Dict, Optional, List
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
-from std_msgs.msg import String
 from sensor_msgs.msg import Image
 from flask import Flask, render_template_string, request, jsonify
 from cv_bridge import CvBridge
 import cv2
 import base64
+from std_msgs.msg import String, Int32 
 
 
 # ============================================================================
@@ -427,6 +427,14 @@ class CncMotionCoordinator(Node):
         self.declare_parameter('gripper_offset_x', -245.0)  # mm (gripper offset in X)
         self.declare_parameter('gripper_offset_y', 0.0)     # mm (gripper offset in Y)
         self.declare_parameter('gripper_offset_z', -0.0)   # mm (gripper offset in Z)
+
+        # Servo control parameters  
+        self.declare_parameter('servo_wrist_horizontal', 90)    # Wrist horizontal position (degrees)  
+        self.declare_parameter('servo_gripper_open', 180)       # Gripper fully open (degrees)  
+        self.declare_parameter('servo_gripper_closed', 135)     # Gripper closed (degrees)  
+        self.declare_parameter('pick_height_offset', 10.0)      # Height above object before descending (mm)  
+        self.declare_parameter('pick_descent_speed', 500)       # Speed for Z descent (mm/min)  
+        self.declare_parameter('motion_delay', 0.5)             # Delay between motion steps (seconds)
         
         self.feed_rate = self.get_parameter('feed_rate').value
         self.web_port = self.get_parameter('web_port').value
@@ -436,11 +444,32 @@ class CncMotionCoordinator(Node):
         self.gripper_offset_x = self.get_parameter('gripper_offset_x').value
         self.gripper_offset_y = self.get_parameter('gripper_offset_y').value
         self.gripper_offset_z = self.get_parameter('gripper_offset_z').value
+
+        self.servo_wrist_horizontal = self.get_parameter('servo_wrist_horizontal').value  
+        self.servo_gripper_open = self.get_parameter('servo_gripper_open').value  
+        self.servo_gripper_closed = self.get_parameter('servo_gripper_closed').value  
+        self.pick_height_offset = self.get_parameter('pick_height_offset').value  
+        self.pick_descent_speed = self.get_parameter('pick_descent_speed').value  
+        self.motion_delay = self.get_parameter('motion_delay').value
         
         # ====================================================================
         # ROS2 Publishers & Subscribers
         # ====================================================================
         # Publisher: Send commands to CNC controller
+
+        # Publisher: Control wrist servo (servo1)  
+        self.pub_servo1 = self.create_publisher(  
+            Int32,  
+            '/servo1',  
+            10  
+        )  
+        
+        # Publisher: Control gripper servo (servo2)  
+        self.pub_servo2 = self.create_publisher(  
+            Int32,  
+            '/servo2',  
+            10  
+        )
         self.pub_cnc_cmd = self.create_publisher(
             String, 
             '/serial_cnc_in', 
@@ -483,6 +512,11 @@ class CncMotionCoordinator(Node):
         self.origin_x = 0.0
         self.origin_y = 0.0
         self.origin_z = 0.0
+
+        # ADD THESE:
+        # GRBL state tracking (Idle, Run, Hold, Alarm, etc.)
+        self.grbl_state = "Unknown"
+        self.grbl_state_lock = threading.Lock()
         
         # Preset waypoints (P1-P4) - stored as relative coordinates
         self.presets = [
@@ -501,6 +535,8 @@ class CncMotionCoordinator(Node):
         self.position_lock = threading.Lock()
         self.camera_lock = threading.Lock()
         self.objects_lock = threading.Lock()
+        self.catch_lock = threading.Lock()         
+        self.catch_in_progress = False   
         
         # ====================================================================
         # Timers
@@ -555,12 +591,19 @@ class CncMotionCoordinator(Node):
         """
         Process status messages from CNC controller.
         
-        Parses position data from GRBL status reports.
+        Parses position data and machine state from GRBL status reports.
         Format: <Idle|MPos:10.000,20.000,5.000|...>
+                <Run|MPos:10.000,20.000,5.000|...>
         
         Args:
             msg: Status message from CNC controller
         """
+        # Parse machine state (Idle, Run, Hold, Alarm, etc.)
+        state_match = re.search(r'<([A-Za-z]+)\|', msg.data)
+        if state_match:
+            with self.grbl_state_lock:
+                self.grbl_state = state_match.group(1)
+        
         # Parse machine position from status report
         match = re.search(r'MPos:([-\d\.]+),([-\d\.]+),([-\d\.]+)', msg.data)
         if match:
@@ -571,9 +614,60 @@ class CncMotionCoordinator(Node):
                 
             self.get_logger().debug(
                 f'Position updated: X={self.machine_x:.3f} '
-                f'Y={self.machine_y:.3f} Z={self.machine_z:.3f}'
+                f'Y={self.machine_y:.3f} Z={self.machine_z:.3f} '
+                f'State={self.grbl_state}'
             )
-    
+
+    def wait_until_idle(self, timeout_sec: float = 15.0, check_interval: float = 0.05) -> bool:
+        """
+        Wait until GRBL reports 'Idle' state (motion complete).
+        
+        Args:
+            timeout_sec: Maximum time to wait (seconds)
+            check_interval: How often to check state (seconds)
+            
+        Returns:
+            True if machine reached Idle, False if timeout
+        """
+        start_time = time.time()
+        
+        while (time.time() - start_time) < timeout_sec:
+            with self.grbl_state_lock:
+                current_state = self.grbl_state
+            
+            # Check if machine is idle
+            if current_state == "Idle":
+                self.get_logger().debug(f'✓ Machine idle (waited {time.time() - start_time:.2f}s)')
+                return True
+            
+            # Log if we're still running
+            if current_state == "Run":
+                self.get_logger().debug(f'⏳ Waiting for motion to complete... ({current_state})')
+            
+            time.sleep(check_interval)
+        
+        # Timeout reached
+        with self.grbl_state_lock:
+            final_state = self.grbl_state
+        
+        self.get_logger().error(
+            f'❌ Timeout waiting for Idle state! '
+            f'Current state: {final_state} (waited {timeout_sec}s)'
+        )
+        return False
+
+    def wait_for_servo(self, delay_sec: float = 0.5) -> None:
+        """
+        Wait for servo to reach target position.
+        
+        Servos don't report completion, so we use a fixed delay.
+        
+        Args:
+            delay_sec: Time to wait for servo movement (seconds)
+        """
+        self.get_logger().debug(f'⏳ Waiting {delay_sec}s for servo...')
+        time.sleep(delay_sec)
+
     def poll_cnc_position(self) -> None:
         """
         Request current position from CNC controller.
@@ -713,6 +807,134 @@ class CncMotionCoordinator(Node):
             f'X={rel_x:.3f} Y={rel_y:.3f} Z={rel_z:.3f} (relative) | '
             f'Delta: X={delta_x:.3f} Y={delta_y:.3f} Z={delta_z:.3f}'
         )
+
+    # ========================================================================
+    # Servo Control Methods
+    # ========================================================================
+
+    def set_wrist_angle(self, angle_degrees: int) -> None:
+        """
+        Set wrist servo (servo1) to specified angle.
+        
+        Args:
+            angle_degrees: Target angle in degrees (0-180)
+        """
+        msg = Int32()
+        msg.data = int(angle_degrees)
+        self.pub_servo1.publish(msg)
+        self.get_logger().info(f'🔄 Wrist servo set to {angle_degrees}°')
+
+    def set_gripper(self, angle_degrees: int) -> None:
+        """
+        Set gripper servo (servo2) to specified angle.
+        
+        Args:
+            angle_degrees: Target angle in degrees (0-180)
+                        180 = fully open, 135 = closed
+        """
+        msg = Int32()
+        msg.data = int(angle_degrees)
+        self.pub_servo2.publish(msg)
+        
+        state = "OPEN" if angle_degrees >= 170 else "CLOSED"
+        self.get_logger().info(f'🤏 Gripper set to {angle_degrees}° ({state})')
+
+    def open_gripper(self) -> None:
+        """Open the gripper fully."""
+        self.set_gripper(self.servo_gripper_open)
+
+    def close_gripper(self) -> None:
+        """Close the gripper."""
+        self.set_gripper(self.servo_gripper_closed)
+
+    def compute_object_orientation(self, obj: dict) -> Optional[float]:
+        """
+        Compute the orientation angle of the object's principal axis.
+        
+        Args:
+            obj: Object dictionary containing moment_vector
+            
+        Returns:
+            Orientation angle in degrees (0-180), or None if unavailable
+        """
+        moment_vector = obj.get("moment_vector")
+        if not moment_vector:
+            self.get_logger().warn('Object has no moment_vector')
+            return None
+        
+        vx = moment_vector.get("vx", 1.0)
+        vy = moment_vector.get("vy", 0.0)
+        
+        # Calculate angle from horizontal (in degrees)
+        angle_rad = math.atan2(vy, vx)
+        angle_deg = math.degrees(angle_rad)
+        
+        # Normalize to 0-180 range (since wrist servo is 0-180)
+        # Add 90 to convert from [-90, 90] to [0, 180]
+        wrist_angle = (angle_deg + 90) % 180
+        
+        self.get_logger().info(
+            f'📐 Object orientation: vx={vx:.3f}, vy={vy:.3f} → '
+            f'angle={angle_deg:.1f}° → wrist={wrist_angle:.1f}°'
+        )
+        
+        return wrist_angle
+
+    def goto_position_xy_only(self, rel_x: float, rel_y: float) -> None:
+        """
+        Move CNC to specified XY position (relative to origin), keeping Z unchanged.
+        
+        Args:
+            rel_x: Target X position relative to origin (mm)
+            rel_y: Target Y position relative to origin (mm)
+        """
+        # Get current relative position
+        current_rel = self.get_relative_position()
+        
+        # Calculate the delta (difference between target and current)
+        delta_x = rel_x - current_rel['x']
+        delta_y = rel_y - current_rel['y']
+        
+        # Send G-code command (G91 = relative positioning, G1 = linear move)
+        # Only move in XY plane
+        cmd = f'G91 G1 X{delta_x:.4f} Y{delta_y:.4f} F{self.feed_rate}'
+        self.send_cnc_command(cmd)
+        
+        # Switch back to absolute mode for safety
+        self.send_cnc_command('G90')
+        
+        self.get_logger().info(
+            f'Moving in XY plane: X={rel_x:.3f} Y={rel_y:.3f} | '
+            f'Delta: X={delta_x:.3f} Y={delta_y:.3f}'
+        )
+
+    def goto_position_z_only(self, rel_z: float, feed_rate: Optional[int] = None) -> None:
+        """
+        Move CNC to specified Z position (relative to origin), keeping XY unchanged.
+        
+        Args:
+            rel_z: Target Z position relative to origin (mm)
+            feed_rate: Optional custom feed rate (mm/min), uses default if None
+        """
+        # Get current relative position
+        current_rel = self.get_relative_position()
+        
+        # Calculate the delta
+        delta_z = rel_z - current_rel['z']
+        
+        # Use custom feed rate or default
+        speed = feed_rate if feed_rate is not None else self.feed_rate
+        
+        # Send G-code command
+        cmd = f'G91 G1 Z{delta_z:.4f} F{speed}'
+        self.send_cnc_command(cmd)
+        
+        # Switch back to absolute mode
+        self.send_cnc_command('G90')
+        
+        self.get_logger().info(
+            f'Moving in Z axis: Z={rel_z:.3f} | Delta: Z={delta_z:.3f} @ {speed} mm/min'
+        )
     
     # ========================================================================
     # Gripper Pick Target Calculation
@@ -786,37 +1008,284 @@ class CncMotionCoordinator(Node):
     
     def catch_object(self) -> str:
         """
-        Move the CNC so the gripper aligns with the detected object's pickup point.
+        Execute a complete pick-and-place operation:
+        1. Move to XY position above the object
+        2. Open gripper
+        3. Rotate wrist to match object orientation
+        4. Descend in Z to pick height
+        5. Close gripper
+        6. Ascend in Z to safe height
+        7. Decide placement location based on object type and size
+        8. Move to placement location
+        
+        Each motion step waits for completion before proceeding.
+        Thread-safe: Only one catch operation can run at a time.
+        
+        Returns:
+            Status message string
         """
-        self.get_logger().info('🦾 CATCH! Button pressed')
-
-        with self.objects_lock:
-            if not self.latest_objects:
-                self.get_logger().warn('No objects detected to catch')
-                return 'No objects detected'
-
-            obj = self.latest_objects[0]
-
-        pickup = obj.get("pickup_point_relative_to_camera_mm")
-        if pickup is None:
-            self.get_logger().warn('Target object has no pickup_point_relative_to_camera_mm')
-            return 'Target has no pickup point'
-
+        # ========================================================================
+        # THREAD SAFETY: Check if catch is already in progress
+        # ========================================================================
+        with self.catch_lock:
+            if self.catch_in_progress:
+                self.get_logger().warn('⚠️  Catch already in progress, ignoring request')
+                return 'Catch already in progress'
+            self.catch_in_progress = True
+        
         try:
-            target = self.compute_pick_target_rel(pickup)
-        except Exception as e:
-            self.get_logger().error(f'Failed to compute pick target: {e}')
-            return f'Failed to compute target: {e}'
+            self.get_logger().info('=' * 70)
+            self.get_logger().info('🦾 CATCH SEQUENCE INITIATED')
+            self.get_logger().info('=' * 70)
+            
+            # ========================================================================
+            # STEP 1: Validate object detection
+            # ========================================================================
+            with self.objects_lock:
+                if not self.latest_objects:
+                    self.get_logger().warn('❌ No objects detected to catch')
+                    return 'No objects detected'
+                
+                obj = self.latest_objects[0]
+            
+            obj_name = obj.get('name', 'Unknown')
+            self.get_logger().info(f'🎯 Target object: {obj_name}')
+            
+            # ========================================================================
+            # STEP 2: Get pickup point coordinates
+            # ========================================================================
+            pickup = obj.get("pickup_point_relative_to_camera_mm")
+            if pickup is None:
+                self.get_logger().warn('❌ Target object has no pickup_point_relative_to_camera_mm')
+                return 'Target has no pickup point'
+            
+            self.get_logger().info(
+                f'📍 Pickup point (camera frame): X={pickup[0]:.3f} mm, Y={pickup[1]:.3f} mm'
+            )
+            
+            # ========================================================================
+            # STEP 3: Compute target position
+            # ========================================================================
+            try:
+                target = self.compute_pick_target_rel(pickup)
+            except Exception as e:
+                self.get_logger().error(f'❌ Failed to compute pick target: {e}')
+                return f'Failed to compute target: {e}'
+            
+            # Calculate approach position (above the object)
+            approach_height = target["z"] + self.pick_height_offset
+            
+            self.get_logger().info(
+                f'📊 Target position: X={target["x"]:.3f} Y={target["y"]:.3f} Z={target["z"]:.3f}'
+            )
+            self.get_logger().info(
+                f'📊 Approach height: Z={approach_height:.3f} (offset={self.pick_height_offset:.1f} mm)'
+            )
+            
+            # ========================================================================
+            # STEP 4: Compute object orientation
+            # ========================================================================
+            wrist_angle = self.compute_object_orientation(obj)
+            if wrist_angle is None:
+                # Default to horizontal if orientation unavailable
+                wrist_angle = self.servo_wrist_horizontal
+                self.get_logger().warn(f'⚠️  Using default wrist angle: {wrist_angle}°')
+            
+            # ========================================================================
+            # STEP 5: Move to XY position (keeping Z safe)
+            # ========================================================================
+            self.get_logger().info('-' * 70)
+            self.get_logger().info('STEP 1/6: Moving to XY position above object...')
+            self.goto_position_xy_only(target["x"], target["y"])
+            
+            # WAIT FOR MOTION TO COMPLETE
+            if not self.wait_until_idle(timeout_sec=15.0):
+                return "❌ Timeout waiting for XY motion to complete"
+            
+            self.get_logger().info('✓ XY position reached')
+            
+            # ========================================================================
+            # STEP 6: Open gripper
+            # ========================================================================
+            self.get_logger().info('-' * 70)
+            self.get_logger().info('STEP 2/6: Opening gripper...')
+            self.open_gripper()
+            
+            # WAIT FOR SERVO
+            self.wait_for_servo(self.motion_delay)
+            self.get_logger().info('✓ Gripper opened')
+            
+            # ========================================================================
+            # STEP 7: Rotate wrist to match object orientation
+            # ========================================================================
+            self.get_logger().info('-' * 70)
+            self.get_logger().info(f'STEP 3/6: Rotating wrist to {wrist_angle:.1f}°...')
+            self.set_wrist_angle(int(wrist_angle))
+            
+            # WAIT FOR SERVO
+            self.wait_for_servo(self.motion_delay)
+            self.get_logger().info('✓ Wrist rotated')
+            
+            # ========================================================================
+            # STEP 8: Descend to pick height (slow speed)
+            # ========================================================================
+            self.get_logger().info('-' * 70)
+            self.get_logger().info(f'STEP 4/6: Descending to pick height (Z={target["z"]:.3f})...')
+            self.goto_position_z_only(target["z"], feed_rate=self.pick_descent_speed)
+            
+            # WAIT FOR MOTION TO COMPLETE
+            if not self.wait_until_idle(timeout_sec=20.0):
+                return "❌ Timeout waiting for Z descent to complete"
+            
+            self.get_logger().info('✓ Pick height reached')
+            
+            # ========================================================================
+            # STEP 9: Close gripper to grab object
+            # ========================================================================
+            self.get_logger().info('-' * 70)
+            self.get_logger().info('STEP 5/6: Closing gripper to grab object...')
+            self.close_gripper()
+            
+            # WAIT FOR SERVO (extra time for secure grip)
+            self.wait_for_servo(self.motion_delay * 1.5)
+            self.get_logger().info('✓ Object gripped')
+            
+            # ========================================================================
+            # STEP 10: Ascend to safe height
+            # ========================================================================
+            self.get_logger().info('-' * 70)
+            self.get_logger().info(f'STEP 6/6: Ascending to safe height (Z={approach_height:.3f})...')
+            self.goto_position_z_only(approach_height)
+            
+            # WAIT FOR MOTION TO COMPLETE
+            if not self.wait_until_idle(timeout_sec=20.0):
+                return "❌ Timeout waiting for Z ascent to complete"
+            
+            self.get_logger().info('✓ Safe height reached')
+            
+            # ========================================================================
+            # STEP 11: DECISION PLACE - Determine placement location
+            # ========================================================================
+            self.get_logger().info('=' * 70)
+            self.get_logger().info('🧠 DECISION PLACE - Determining placement location...')
+            self.get_logger().info('=' * 70)
+            
+            placement_result = self.decision_place(obj)
+            
+            # ========================================================================
+            # COMPLETION
+            # ========================================================================
+            self.get_logger().info('=' * 70)
+            self.get_logger().info(f'✅ CATCH SEQUENCE COMPLETE - {placement_result}')
+            self.get_logger().info('=' * 70)
+            
+            return placement_result
+        
+        finally:
+            # ========================================================================
+            # ALWAYS release the lock, even if there's an error
+            # ========================================================================
+            with self.catch_lock:
+                self.catch_in_progress = False
+            self.get_logger().debug('🔓 Catch lock released')
 
-        self.get_logger().info(
-            f"Target object: {obj.get('name','Unknown')} | "
-            f"pickup_point_relative_to_camera_mm={pickup} | "
-            f"moving to rel: X={target['x']:.3f} Y={target['y']:.3f} Z={target['z']:.3f}"
-        )
+    def decision_place(self, obj: dict) -> str:
+        """
+        Decide where to place the object based on its type and size.
+        
+        Decision logic:
+        - Metal screw, body_length <= 10mm  → Point 1 (P1)
+        - Metal screw, body_length > 10mm   → Point 2 (P2)
+        - Wood screw, body_length <= 10mm   → Point 3 (P3)
+        - Wood screw, body_length > 10mm    → Point 4 (P4)
+        
+        Args:
+            obj: Object dictionary containing classification and body_length_mm
+            
+        Returns:
+            Status message string
+        """
+        # ========================================================================
+        # Extract object properties
+        # ========================================================================
+        classification = obj.get('classification', {})
+        material_type = classification.get('type', 'unknown').lower()
+        body_length = obj.get('body_length_mm', 0.0)
+        obj_name = obj.get('name', 'Unknown')
+        
+        self.get_logger().info(f'📦 Object properties:')
+        self.get_logger().info(f'   Name: {obj_name}')
+        self.get_logger().info(f'   Material: {material_type}')
+        self.get_logger().info(f'   Body Length: {body_length:.2f} mm')
+        
+        # ========================================================================
+        # Decision logic
+        # ========================================================================
+        if 'metal' in material_type:
+            if body_length <= 10.0:
+                target_point = 1  # P1
+                target_name = "P1"
+                target_pos = self.presets[0]
+            else:
+                target_point = 2  # P2
+                target_name = "P2"
+                target_pos = self.presets[1]
+        
+        elif 'wood' in material_type:
+            if body_length <= 10.0:
+                target_point = 3  # P3
+                target_name = "P3"
+                target_pos = self.presets[2]
+            else:
+                target_point = 4  # P4
+                target_name = "P4"
+                target_pos = self.presets[3]
+        
+        else:
+            # Unknown material type - default to P4
+            self.get_logger().warn(f'⚠️  Unknown material type: {material_type}, defaulting to P4')
+            target_point = 4  # P4
+            target_name = "P4 (Unknown)"
+            target_pos = self.presets[3]
+        
+        # ========================================================================
+        # Log decision
+        # ========================================================================
+        self.get_logger().info('-' * 70)
+        self.get_logger().info(f'🎯 DECISION:')
+        self.get_logger().info(f'   Material: {material_type.upper()}')
+        self.get_logger().info(f'   Body Length: {body_length:.2f} mm {"<= 10mm" if body_length <= 10.0 else "> 10mm"}')
+        self.get_logger().info(f'   → Destination: {target_name}')
+        self.get_logger().info(f'   → Position: X={target_pos["x"]:.3f} Y={target_pos["y"]:.3f} Z={target_pos["z"]:.3f}')
+        self.get_logger().info('-' * 70)
+        
+        # ========================================================================
+        # Move to placement location
+        # ========================================================================
+        self.get_logger().info(f'🚀 Moving to {target_name}...')
+        self.goto_position(target_pos['x'], target_pos['y'], target_pos['z'])
+        
+        # WAIT FOR MOTION TO COMPLETE
+        if not self.wait_until_idle(timeout_sec=20.0):
+            return f"❌ Timeout moving to {target_name}"
+        
+        self.get_logger().info(f'✓ Reached {target_name}')
+        
+        # ========================================================================
+        # Open gripper to release object
+        # ========================================================================
+        self.get_logger().info('🤏 Opening gripper to release object...')
+        self.open_gripper()
+        
+        # WAIT FOR SERVO
+        self.wait_for_servo(self.motion_delay)
+        self.get_logger().info('✓ Object released')
+        
+        # ========================================================================
+        # Return success message
+        # ========================================================================
+        return f'Successfully placed {obj_name} ({material_type}, {body_length:.1f}mm) at {target_name}'
 
-        # Move CNC
-        self.goto_position(target["x"], target["y"], target["z"])
-        return f"Moving to {obj.get('name','Unknown')}"
     
     # ========================================================================
     # Web Server (Flask)
