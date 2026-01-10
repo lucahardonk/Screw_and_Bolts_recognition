@@ -15,6 +15,8 @@ from flask import Flask, Response, jsonify
 # =========================
 # CONFIG
 # =========================
+CAMERA_DEVICE = "/dev/v4l/by-id/usb-HD_USB_Camera_HD_USB_Camera_2020040501-video-index0"
+
 FULL_WIDTH = 3264
 FULL_HEIGHT = 2448
 
@@ -36,23 +38,24 @@ log = logging.getLogger("camera")
 # CAMERA OPEN
 # =========================
 def open_camera():
-    for i in range(10):
-        cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FOURCC,
-                    cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, FULL_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FULL_HEIGHT)
-            cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open camera at {CAMERA_DEVICE}")
+    
+    # Set MJPEG format for highest resolution at 15 fps
+    cap.set(cv2.CAP_PROP_FOURCC,
+            cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FULL_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FULL_HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-            time.sleep(0.3)
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            log.info(f"Camera opened at /dev/video{i} ({w}x{h})")
-            return cap
-
-    raise RuntimeError("No camera found")
+    time.sleep(0.3)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    log.info(f"Camera opened at {CAMERA_DEVICE} ({w}x{h} @ {fps} fps)")
+    return cap
 
 # =========================
 # CAPTURE THREAD

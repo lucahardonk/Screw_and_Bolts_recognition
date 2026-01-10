@@ -219,12 +219,12 @@ HTML_TEMPLATE = '''
 
             <!-- Gripper Transform Info -->
             <div class="section">
-                <h2>🤖 Gripper Transform</h2>
+                <h2>🤖 Gripper Offset</h2>
                 <div class="transform-info">
                     <strong>Camera → Gripper Offset:</strong><br>
                     X: <span id="tf-x">0</span> mm | 
                     Y: <span id="tf-y">0</span> mm | 
-                    Rotation: <span id="tf-rot">0</span>°
+                    Z: <span id="tf-z">0</span> mm
                 </div>
             </div>
         </div>
@@ -303,7 +303,7 @@ HTML_TEMPLATE = '''
                                     <p><strong>Type:</strong> ${obj.classification?.type || 'N/A'}</p>
                                     <p><strong>Body Diameter:</strong> ${obj.body_diameter_mm?.toFixed(2) || 'N/A'} mm</p>
                                     <p><strong>Body Length:</strong> ${obj.body_length_mm?.toFixed(2) || 'N/A'} mm</p>
-                                    <p><strong>Pickup Point:</strong> (${obj.pickup_point_px?.[0]?.toFixed(1) || 'N/A'}, ${obj.pickup_point_px?.[1]?.toFixed(1) || 'N/A'}) px</p>
+                                    <p><strong>Pickup Point (Rel):</strong> (${obj.pickup_point_relative_to_camera_mm?.[0]?.toFixed(1) || 'N/A'}, ${obj.pickup_point_relative_to_camera_mm?.[1]?.toFixed(1) || 'N/A'}) mm</p>
                                     <p><strong>Jagginess:</strong> ${obj.jagginess?.overall_px?.toFixed(3) || 'N/A'}</p>
                                 </div>
                             `;
@@ -323,7 +323,7 @@ HTML_TEMPLATE = '''
                 .then(data => {
                     document.getElementById('tf-x').textContent = data.offset_x.toFixed(1);
                     document.getElementById('tf-y').textContent = data.offset_y.toFixed(1);
-                    document.getElementById('tf-rot').textContent = data.rotation_deg.toFixed(1);
+                    document.getElementById('tf-z').textContent = data.offset_z.toFixed(1);
                 })
                 .catch(err => console.error('Error fetching transform:', err));
         }
@@ -333,7 +333,6 @@ HTML_TEMPLATE = '''
             fetch('/api/set_origin', {method: 'POST'})
                 .then(() => {
                     updatePosition();
-                    alert('✓ Origin set to current position');
                 })
                 .catch(err => console.error('Error setting origin:', err));
         }
@@ -343,20 +342,17 @@ HTML_TEMPLATE = '''
             fetch('/api/save_preset/' + idx, {method: 'POST'})
                 .then(() => {
                     updatePosition();
-                    alert('✓ Current position saved to P' + (idx+1));
                 })
                 .catch(err => console.error('Error saving preset:', err));
         }
         
         // Go to home position (0,0,0)
         function goToHome() {
-            if (!confirm('Move to Home position (0, 0, 0)?')) return;
             fetch('/api/goto', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({x: 0, y: 0, z: 0})
             })
-            .then(() => alert('✓ Moving to Home'))
             .catch(err => console.error('Error going to home:', err));
         }
         
@@ -366,14 +362,11 @@ HTML_TEMPLATE = '''
             const y = parseFloat(document.getElementById('preset'+idx+'-y').value);
             const z = parseFloat(document.getElementById('preset'+idx+'-z').value);
             
-            if (!confirm(`Move to P${idx+1} (${x}, ${y}, ${z})?`)) return;
-            
             fetch('/api/goto', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({x: x, y: y, z: z})
             })
-            .then(() => alert(`✓ Moving to P${idx+1}`))
             .catch(err => console.error('Error going to preset:', err));
         }
 
@@ -382,7 +375,7 @@ HTML_TEMPLATE = '''
             fetch('/api/catch', {method: 'POST'})
                 .then(r => r.json())
                 .then(data => {
-                    alert('🦾 CATCH! ' + data.message);
+                    console.log('Catch executed:', data.message);
                 })
                 .catch(err => console.error('Error catching:', err));
         }
@@ -417,7 +410,7 @@ class CncMotionCoordinator(Node):
     - Manage waypoints (Home + 4 presets)
     - Provide web interface for monitoring and control
     - Display camera feed and detected objects
-    - Handle gripper-to-camera transformation
+    - Handle gripper-to-camera offset for pick-and-place
     """
     
     def __init__(self):
@@ -427,22 +420,22 @@ class CncMotionCoordinator(Node):
         # ROS2 Parameters
         # ====================================================================
         self.declare_parameter('feed_rate', 2500)           # mm/min
-        self.declare_parameter('web_port', 5000)            # Web server port
+        self.declare_parameter('web_port', 8002)            # Web server port
         self.declare_parameter('position_poll_rate', 2.0)   # Hz
         
-        # Gripper-to-camera transformation parameters
-        self.declare_parameter('gripper_offset_x', -200.0)  # mm (gripper is 200mm behind camera in X)
-        self.declare_parameter('gripper_offset_y', -5.0)    # mm (gripper is 5mm offset in Y)
-        self.declare_parameter('gripper_rotation', 90.0)    # degrees (90° rotation in X-Y plane)
+        # Gripper-to-camera offset parameters
+        self.declare_parameter('gripper_offset_x', -245.0)  # mm (gripper offset in X)
+        self.declare_parameter('gripper_offset_y', 0.0)     # mm (gripper offset in Y)
+        self.declare_parameter('gripper_offset_z', -0.0)   # mm (gripper offset in Z)
         
         self.feed_rate = self.get_parameter('feed_rate').value
         self.web_port = self.get_parameter('web_port').value
         self.position_poll_rate = self.get_parameter('position_poll_rate').value
         
-        # Gripper transform
+        # Gripper offset
         self.gripper_offset_x = self.get_parameter('gripper_offset_x').value
         self.gripper_offset_y = self.get_parameter('gripper_offset_y').value
-        self.gripper_rotation = self.get_parameter('gripper_rotation').value
+        self.gripper_offset_z = self.get_parameter('gripper_offset_z').value
         
         # ====================================================================
         # ROS2 Publishers & Subscribers
@@ -533,10 +526,10 @@ class CncMotionCoordinator(Node):
         self.get_logger().info(f'Position Poll Rate: {self.position_poll_rate} Hz')
         self.get_logger().info(f'Web Interface: http://localhost:{self.web_port}')
         self.get_logger().info('-' * 60)
-        self.get_logger().info('Gripper Transform:')
+        self.get_logger().info('Gripper Offset:')
         self.get_logger().info(f'  Offset X: {self.gripper_offset_x} mm')
         self.get_logger().info(f'  Offset Y: {self.gripper_offset_y} mm')
-        self.get_logger().info(f'  Rotation: {self.gripper_rotation}°')
+        self.get_logger().info(f'  Offset Z: {self.gripper_offset_z} mm')
         self.get_logger().info('=' * 60)
         
         # Send GRBL unlock command after 5 seconds
@@ -693,93 +686,137 @@ class CncMotionCoordinator(Node):
     
     def goto_position(self, rel_x: float, rel_y: float, rel_z: float) -> None:
         """
-        Move CNC to specified position (relative to origin).
+        Move CNC to specified position (relative to origin) using relative movement.
         
         Args:
             rel_x: Target X position relative to origin (mm)
             rel_y: Target Y position relative to origin (mm)
             rel_z: Target Z position relative to origin (mm)
         """
-        # Convert relative coordinates to absolute machine coordinates
-        with self.position_lock:
-            abs_x = self.origin_x + rel_x
-            abs_y = self.origin_y + rel_y
-            abs_z = self.origin_z + rel_z
+        # Get current relative position
+        current_rel = self.get_relative_position()
         
-        # Send G-code command (G90 = absolute positioning, G1 = linear move)
-        cmd = f'G90 G1 X{abs_x:.4f} Y{abs_y:.4f} Z{abs_z:.4f} F{self.feed_rate}'
+        # Calculate the delta (difference between target and current)
+        delta_x = rel_x - current_rel['x']
+        delta_y = rel_y - current_rel['y']
+        delta_z = rel_z - current_rel['z']
+        
+        # Send G-code command (G91 = relative positioning, G1 = linear move)
+        cmd = f'G91 G1 X{delta_x:.4f} Y{delta_y:.4f} Z{delta_z:.4f} F{self.feed_rate}'
         self.send_cnc_command(cmd)
+        
+        # Switch back to absolute mode for safety
+        self.send_cnc_command('G90')
         
         self.get_logger().info(
             f'Moving to position: '
-            f'X={rel_x:.3f} Y={rel_y:.3f} Z={rel_z:.3f} (relative)'
+            f'X={rel_x:.3f} Y={rel_y:.3f} Z={rel_z:.3f} (relative) | '
+            f'Delta: X={delta_x:.3f} Y={delta_y:.3f} Z={delta_z:.3f}'
         )
     
     # ========================================================================
-    # Gripper Transform Methods
+    # Gripper Pick Target Calculation
     # ========================================================================
     
-    def transform_camera_to_gripper(self, camera_x: float, camera_y: float) -> tuple:
+    def compute_pick_target_rel(self, pickup_xy_mm: List[float]) -> Dict[str, float]:
         """
-        Transform coordinates from camera frame to gripper frame.
+        Convert an object's pickup point (camera frame, mm) into a CNC target position
+        in *relative-to-origin* coordinates.
         
-        The gripper is offset by (gripper_offset_x, gripper_offset_y) from the camera
-        and rotated by gripper_rotation degrees in the X-Y plane.
-        
+        Simply subtracts the pickup point from current position and adds gripper offsets.
+
         Args:
-            camera_x: X coordinate in camera frame (mm)
-            camera_y: Y coordinate in camera frame (mm)
+            pickup_xy_mm: [x_mm, y_mm] in camera frame (relative to camera center)
             
         Returns:
-            tuple: (gripper_x, gripper_y) in gripper frame (mm)
+            Dictionary with 'x', 'y', 'z' keys (target position relative to origin)
         """
-        # Convert rotation to radians
-        theta = math.radians(self.gripper_rotation)
-        
-        # Apply rotation matrix
-        cos_theta = math.cos(theta)
-        sin_theta = math.sin(theta)
-        
-        # Rotate point
-        rotated_x = camera_x * cos_theta - camera_y * sin_theta
-        rotated_y = camera_x * sin_theta + camera_y * cos_theta
-        
-        # Apply translation
-        gripper_x = rotated_x + self.gripper_offset_x
-        gripper_y = rotated_y + self.gripper_offset_y
-        
-        return gripper_x, gripper_y
+        if not (isinstance(pickup_xy_mm, (list, tuple)) and len(pickup_xy_mm) >= 2):
+            raise ValueError(f"Invalid pickup_point_relative_to_camera_mm: {pickup_xy_mm}")
+
+        # Get pickup point coordinates (relative to camera center)
+        pickup_x = float(pickup_xy_mm[0])
+        pickup_y = float(pickup_xy_mm[1])
+
+        # Current CNC position (relative to origin)
+        cur = self.get_relative_position()
+
+        # Target = current + gripper_offset - pickup (with axis swap)
+        target_x = cur["x"] + self.gripper_offset_x + pickup_y
+        target_y = cur["y"] + self.gripper_offset_y + pickup_x
+        target_z = cur["z"] + self.gripper_offset_z
+
+        # Print detailed computation
+        self.get_logger().info('=' * 70)
+        self.get_logger().info('🎯 PICK TARGET COMPUTATION')
+        self.get_logger().info('=' * 70)
+        self.get_logger().info(f'📍 Current Position (relative to origin):')
+        self.get_logger().info(f'   X = {cur["x"]:.3f} mm')
+        self.get_logger().info(f'   Y = {cur["y"]:.3f} mm')
+        self.get_logger().info(f'   Z = {cur["z"]:.3f} mm')
+        self.get_logger().info('-' * 70)
+        self.get_logger().info(f'📷 Pickup Point (camera frame, relative to center):')
+        self.get_logger().info(f'   pickup_x = {pickup_x:.3f} mm')
+        self.get_logger().info(f'   pickup_y = {pickup_y:.3f} mm')
+        self.get_logger().info('-' * 70)
+        self.get_logger().info(f'🤖 Gripper Offsets:')
+        self.get_logger().info(f'   offset_x = {self.gripper_offset_x:.3f} mm')
+        self.get_logger().info(f'   offset_y = {self.gripper_offset_y:.3f} mm')
+        self.get_logger().info(f'   offset_z = {self.gripper_offset_z:.3f} mm')
+        self.get_logger().info('-' * 70)
+        self.get_logger().info(f'🧮 Computation (with axis swap):')
+        self.get_logger().info(f'   target_x = cur_x + offset_x - pickup_y')
+        self.get_logger().info(f'   target_x = {cur["x"]:.3f} + {self.gripper_offset_x:.3f} - {pickup_y:.3f} = {target_x:.3f}')
+        self.get_logger().info(f'   target_y = cur_y + offset_y - pickup_x')
+        self.get_logger().info(f'   target_y = {cur["y"]:.3f} + {self.gripper_offset_y:.3f} - {pickup_x:.3f} = {target_y:.3f}')
+        self.get_logger().info(f'   target_z = cur_z + offset_z')
+        self.get_logger().info(f'   target_z = {cur["z"]:.3f} + {self.gripper_offset_z:.3f} = {target_z:.3f}')
+        self.get_logger().info('-' * 70)
+        self.get_logger().info(f'✅ Final Target Position:')
+        self.get_logger().info(f'   X = {target_x:.3f} mm')
+        self.get_logger().info(f'   Y = {target_y:.3f} mm')
+        self.get_logger().info(f'   Z = {target_z:.3f} mm')
+        self.get_logger().info('=' * 70)
+
+        return {
+            "x": target_x,
+            "y": target_y,
+            "z": target_z,
+        }
     
     def catch_object(self) -> str:
         """
-        Execute catch operation.
-        
-        For now, just logs the action. Will be expanded later to:
-        1. Get pickup point from detected object
-        2. Transform to gripper coordinates
-        3. Move CNC to pickup position
-        4. Execute gripper close
-        
-        Returns:
-            str: Status message
+        Move the CNC so the gripper aligns with the detected object's pickup point.
         """
         self.get_logger().info('🦾 CATCH! Button pressed')
-        
-        # TODO: Implement full catch logic
-        # 1. Get first detected object
-        # 2. Extract pickup_point_mm
-        # 3. Transform to gripper frame
-        # 4. Move CNC
-        # 5. Close gripper
-        
+
         with self.objects_lock:
-            if self.latest_objects:
-                obj = self.latest_objects[0]
-                self.get_logger().info(f'Target object: {obj.get("name", "Unknown")}')
-                return f'Target locked: {obj.get("name", "Unknown")}'
-            else:
+            if not self.latest_objects:
                 self.get_logger().warn('No objects detected to catch')
                 return 'No objects detected'
+
+            obj = self.latest_objects[0]
+
+        pickup = obj.get("pickup_point_relative_to_camera_mm")
+        if pickup is None:
+            self.get_logger().warn('Target object has no pickup_point_relative_to_camera_mm')
+            return 'Target has no pickup point'
+
+        try:
+            target = self.compute_pick_target_rel(pickup)
+        except Exception as e:
+            self.get_logger().error(f'Failed to compute pick target: {e}')
+            return f'Failed to compute target: {e}'
+
+        self.get_logger().info(
+            f"Target object: {obj.get('name','Unknown')} | "
+            f"pickup_point_relative_to_camera_mm={pickup} | "
+            f"moving to rel: X={target['x']:.3f} Y={target['y']:.3f} Z={target['z']:.3f}"
+        )
+
+        # Move CNC
+        self.goto_position(target["x"], target["y"], target["z"])
+        return f"Moving to {obj.get('name','Unknown')}"
     
     # ========================================================================
     # Web Server (Flask)
@@ -845,11 +882,11 @@ class CncMotionCoordinator(Node):
         
         @app.route('/api/gripper_transform')
         def get_gripper_transform():
-            """API: Get gripper transformation parameters"""
+            """API: Get gripper offset parameters"""
             return jsonify({
                 'offset_x': node.gripper_offset_x,
                 'offset_y': node.gripper_offset_y,
-                'rotation_deg': node.gripper_rotation
+                'offset_z': node.gripper_offset_z
             })
         
         @app.route('/api/set_origin', methods=['POST'])

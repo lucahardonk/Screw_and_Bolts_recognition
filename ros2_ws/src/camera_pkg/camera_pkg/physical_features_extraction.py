@@ -1,78 +1,16 @@
 #!/usr/bin/env python3
 """
-Physical Features Extraction ROS2 Node (OPTIMIZED FOR SLOW STREAMS)
+Physical Features Extraction ROS2 Node (OPTIMIZED VERSION)
 
-This node subscribes to:
-  - /camera/closure (sensor_msgs/Image): binary image for overlay
-  - /camera/object_information (std_msgs/String): JSON with detected objects
-
-It synchronizes these two topics (using ApproximateTimeSynchronizer with
-allow_headerless=True), parses the JSON, and draws:
-  - Center dot for each object
-  - Principal-axis–aligned bounding box (from bbox_aligned)
-  - Head-body separation line
-  - Pick-up point (green dot in body center)
-  - Screw type classification (WOOD/METAL) based on jagginess
-
-Publishes:
-  - /camera/physical_features (sensor_msgs/Image): annotated image
-  - /camera/object_physical_features (std_msgs/String): JSON with all computed features
-
-OPTIMIZATIONS:
-  - Processes ONLY centermost object by default (massive speedup)
-  - Frame skipping for slow camera streams
-  - Capped number of slices (max 100 instead of 150)
-  - ROI extraction per object (avoids full-image operations)
-  - Rotation-based slice scanning (column sums instead of line masks)
-  - Reduced logging overhead
-  - Lightweight 1D smoothing (NumPy convolution instead of scipy)
-  - Smaller ROI padding and reduced queue size
-
-ROS2 PARAMETERS:
-- input_image_topic:    Input binary image topic
-                        (default: /camera/closure)
-- input_info_topic:     Input object information topic (JSON String)
-                        (default: /camera/object_information)
-- output_image_topic:   Output annotated image topic
-                        (default: /camera/physical_features)
-- output_json_topic:    Output JSON features topic
-                        (default: /camera/object_physical_features)
-- pixel_to_mm_ratio:    Conversion ratio from pixels to millimeters
-                        (default: 0.1)
-- center_dot_radius:    Radius of center dot in pixels (default: 5)
-- bbox_color_r:         Red channel for bbox color (0-255) (default: 255)
-- bbox_color_g:         Green channel for bbox color (0-255) (default: 0)
-- bbox_color_b:         Blue channel for bbox color (0-255) (default: 0)
-- bbox_thickness:       Thickness of bbox lines (default: 2)
-- jagginess_threshold:  Normalized jagginess threshold for wood detection
-                        (default: 0.05)
-- max_slices:           Maximum number of slices per object (default: 100)
-- min_slices:           Minimum number of slices per object (default: 40)
-- roi_padding:          Padding around object ROI in pixels (default: 15)
-- frame_skip:           Process every Nth frame (1=all, 2=half, 3=third) (default: 1)
-- debug_logging:        Enable detailed per-object logging (default: False)
-- process_closest_only: Process only the object closest to camera center (default: True)
-
-EXAMPLE RUN:
-
-ros2 run camera_pkg physical_features_extraction_node --ros-args \
-    -p input_image_topic:=/camera/closure \
-    -p input_info_topic:=/camera/object_information \
-    -p output_image_topic:=/camera/physical_features \
-    -p output_json_topic:=/camera/object_physical_features \
-    -p pixel_to_mm_ratio:=0.1 \
-    -p max_slices:=100 \
-    -p min_slices:=40 \
-    -p roi_padding:=15 \
-    -p frame_skip:=2 \
-    -p debug_logging:=false \
-    -p process_closest_only:=true
+High-performance version with efficient line sampling and reduced memory allocations.
+All original functionalities preserved including jagginess-based classification.
 """
 
 import json
 import numpy as np
 import numpy.linalg as LA
 import cv2
+from scipy.ndimage import uniform_filter1d
 
 import rclpy
 from rclpy.node import Node
@@ -80,9 +18,6 @@ from rcl_interfaces.msg import ParameterDescriptor
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from cv_bridge import CvBridge
-
-# For message synchronization
-from message_filters import Subscriber, ApproximateTimeSynchronizer
 
 
 class PhysicalFeaturesNode(Node):
@@ -114,7 +49,7 @@ class PhysicalFeaturesNode(Node):
         )
         self.declare_parameter(
             "pixel_to_mm_ratio",
-            0.1,
+            0.040,
             ParameterDescriptor(description="Pixel to mm conversion ratio (px/mm)")
         )
         self.declare_parameter("center_dot_radius", 5)
@@ -126,21 +61,6 @@ class PhysicalFeaturesNode(Node):
             "jagginess_threshold",
             0.05,
             ParameterDescriptor(description="Normalized jagginess threshold for wood detection")
-        )
-        self.declare_parameter(
-            "max_slices",
-            100,
-            ParameterDescriptor(description="Maximum number of slices per object (reduced for speed)")
-        )
-        self.declare_parameter(
-            "min_slices",
-            40,
-            ParameterDescriptor(description="Minimum number of slices per object (reduced for speed)")
-        )
-        self.declare_parameter(
-            "roi_padding",
-            15,
-            ParameterDescriptor(description="Padding around object ROI in pixels (reduced for speed)")
         )
         self.declare_parameter(
             "frame_skip",
@@ -157,6 +77,11 @@ class PhysicalFeaturesNode(Node):
             True,
             ParameterDescriptor(description="Process only the object closest to camera center")
         )
+        self.declare_parameter(
+            "max_slices",
+            300,
+            ParameterDescriptor(description="Maximum number of slices per object (performance cap)")
+        )
 
         # Get parameter values
         input_image_topic = self.get_parameter("input_image_topic").value
@@ -166,12 +91,10 @@ class PhysicalFeaturesNode(Node):
         self.pixel_to_mm_ratio = self.get_parameter("pixel_to_mm_ratio").value
         self.center_dot_radius = self.get_parameter("center_dot_radius").value
         self.jagginess_threshold = self.get_parameter("jagginess_threshold").value
-        self.max_slices = self.get_parameter("max_slices").value
-        self.min_slices = self.get_parameter("min_slices").value
-        self.roi_padding = self.get_parameter("roi_padding").value
         self.frame_skip = self.get_parameter("frame_skip").value
         self.debug_logging = self.get_parameter("debug_logging").value
         self.process_closest_only = self.get_parameter("process_closest_only").value
+        self.max_slices = self.get_parameter("max_slices").value
 
         self.bbox_color = (
             self.get_parameter("bbox_color_b").value,
@@ -183,6 +106,14 @@ class PhysicalFeaturesNode(Node):
         # Frame counter for skipping
         self.frame_counter = 0
 
+        # Store latest data from each topic
+        self.latest_image = None
+        self.latest_info = None
+        self.latest_image_header = None
+        
+        # Flag to prevent double processing
+        self.processing = False
+
         # Logging
         self.get_logger().info("=" * 70)
         self.get_logger().info("     PHYSICAL FEATURES EXTRACTION NODE (OPTIMIZED)")
@@ -193,8 +124,6 @@ class PhysicalFeaturesNode(Node):
         self.get_logger().info(f"  Output JSON topic:   {output_json_topic}")
         self.get_logger().info(f"  Pixel to mm ratio:   {self.pixel_to_mm_ratio}")
         self.get_logger().info(f"  Max slices:          {self.max_slices}")
-        self.get_logger().info(f"  Min slices:          {self.min_slices}")
-        self.get_logger().info(f"  ROI padding:         {self.roi_padding}px")
         self.get_logger().info(f"  Frame skip:          {self.frame_skip} (process every {self.frame_skip} frame(s))")
         self.get_logger().info(f"  Debug logging:       {self.debug_logging}")
         self.get_logger().info(f"  Process closest only: {self.process_closest_only}")
@@ -206,19 +135,21 @@ class PhysicalFeaturesNode(Node):
         self.bridge = CvBridge()
 
         # ---------------------------------------------------
-        # Synchronized subscribers using message_filters
+        # Independent subscribers (no synchronization)
         # ---------------------------------------------------
-        self.image_sub = Subscriber(self, Image, input_image_topic)
-        self.info_sub = Subscriber(self, String, input_info_topic)
-
-        # Optimized for slow streams: reduced queue, increased slop
-        self.sync = ApproximateTimeSynchronizer(
-            [self.image_sub, self.info_sub],
-            queue_size=5,  # Reduced from 10
-            slop=0.2,      # Increased from 0.1 for better sync
-            allow_headerless=True
+        self.image_sub = self.create_subscription(
+            Image,
+            input_image_topic,
+            self.image_callback,
+            10
         )
-        self.sync.registerCallback(self.synchronized_callback)
+        
+        self.info_sub = self.create_subscription(
+            String,
+            input_info_topic,
+            self.info_callback,
+            10
+        )
 
         # ---------------------------------------------------
         # Publishers
@@ -226,174 +157,153 @@ class PhysicalFeaturesNode(Node):
         self.image_pub = self.create_publisher(Image, output_image_topic, 10)
         self.json_pub = self.create_publisher(String, output_json_topic, 10)
 
-        self.get_logger().info("✓ Node ready. Waiting for synchronized messages...\n")
+        self.get_logger().info("✓ Node ready. Processing topics independently...\n")
 
     # =======================================================
-    # OPTIMIZED: Lightweight 1D smoothing (replaces scipy)
+    # OPTIMIZED: Efficient line sampling using Bresenham
     # =======================================================
-    @staticmethod
-    def smooth_1d(data, window_size):
+    def sample_line_efficient(self, binary_image, p1, p2):
         """
-        Simple moving average using NumPy convolution.
-        Much faster than scipy for small arrays.
-        """
-        if window_size < 3:
-            return data
-        kernel = np.ones(window_size) / window_size
-        # mode='same' keeps output same length as input
-        smoothed = np.convolve(data, kernel, mode='same')
-
-        # Fix edges
-        half_window = window_size // 2
-        smoothed[:half_window] = data[:half_window]
-        smoothed[-half_window:] = data[-half_window:]
-
-        return smoothed
-
-    # =======================================================
-    # OPTIMIZED: Extract and rotate ROI for fast slice scanning
-    # =======================================================
-    def extract_rotated_roi(self, binary_image, bbox_aligned, mean, v0):
-        """
-        Extract a rotated ROI around the object aligned with principal axis.
-
+        Sample pixels along a line efficiently without creating full-frame masks.
+        Uses Bresenham's line algorithm.
+        
         Returns:
-            rotated_roi: Binary ROI with object aligned horizontally
-            roi_info: Dict with transformation info for mapping back to original coords
+            tuple: (points_array, white_count) where points_array is Nx2 array of [x,y]
         """
-        # Get bounding box of the aligned bbox
-        pts = np.array(bbox_aligned, dtype=np.float32)
-        x_coords = pts[:, 0]
-        y_coords = pts[:, 1]
-
-        min_x = int(np.floor(np.min(x_coords))) - self.roi_padding
-        max_x = int(np.ceil(np.max(x_coords))) + self.roi_padding
-        min_y = int(np.floor(np.min(y_coords))) - self.roi_padding
-        max_y = int(np.ceil(np.max(y_coords))) + self.roi_padding
-
-        # Clamp to image bounds
+        x1, y1 = int(round(p1[0])), int(round(p1[1]))
+        x2, y2 = int(round(p2[0])), int(round(p2[1]))
+        
         h, w = binary_image.shape[:2]
-        min_x = max(0, min_x)
-        max_x = min(w, max_x)
-        min_y = max(0, min_y)
-        max_y = min(h, max_y)
-
-        roi_width = max_x - min_x
-        roi_height = max_y - min_y
-
-        if roi_width <= 0 or roi_height <= 0:
-            return None, None
-
-        # Extract ROI
-        roi = binary_image[min_y:max_y, min_x:max_x]
-
-        # Compute rotation angle to align v0 with x-axis
-        angle_rad = np.arctan2(v0[1], v0[0])
-        angle_deg = np.degrees(angle_rad)
-
-        # Center of ROI in ROI coordinates
-        roi_center = (roi_width / 2.0, roi_height / 2.0)
-
-        # Rotation matrix
-        rot_matrix = cv2.getRotationMatrix2D(roi_center, -angle_deg, 1.0)
-
-        # Rotate ROI
-        rotated_roi = cv2.warpAffine(
-            roi,
-            rot_matrix,
-            (roi_width, roi_height),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0
-        )
-
-        # Store info for reverse mapping
-        roi_info = {
-            'offset': np.array([min_x, min_y], dtype=np.float32),
-            'roi_center': np.array(roi_center, dtype=np.float32),
-            'rot_matrix': rot_matrix,
-            'angle_deg': angle_deg,
-            'roi_width': roi_width,
-            'roi_height': roi_height
-        }
-
-        return rotated_roi, roi_info
+        
+        # Bresenham's line algorithm
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+        sx = 1 if x1 < x2 else -1
+        sy = 1 if y1 < y2 else -1
+        err = dx - dy
+        
+        points = []
+        white_count = 0
+        
+        x, y = x1, y1
+        
+        while True:
+            # Check bounds and sample
+            if 0 <= x < w and 0 <= y < h:
+                if binary_image[y, x] > 0:
+                    points.append([x, y])
+                    white_count += 1
+            
+            if x == x2 and y == y2:
+                break
+                
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+        
+        return np.array(points, dtype=np.float32) if points else np.empty((0, 2), dtype=np.float32), white_count
 
     # =======================================================
-    # OPTIMIZED: Fast slice width computation using column sums
+    # Image callback - stores latest image
     # =======================================================
-    def compute_slice_widths_fast(self, rotated_roi):
-        """
-        Compute width profile by summing columns in rotated ROI.
-        This is MUCH faster than drawing line masks.
-
-        Returns:
-            slice_widths: 1D array of widths (one per column)
-        """
-        # Count non-zero pixels in each column
-        slice_widths = np.count_nonzero(rotated_roi, axis=0).astype(np.float32)
-        return slice_widths
+    def image_callback(self, msg: Image):
+        """Store the latest image and trigger processing."""
+        try:
+            self.latest_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
+            self.latest_image_header = msg.header
+            
+            # Only trigger processing from image callback to avoid double processing
+            if self.latest_info is not None and not self.processing:
+                self.process_and_publish()
+                
+        except Exception as e:
+            self.get_logger().error(f"❌ Error in image callback: {e}")
 
     # =======================================================
-    # OPTIMIZED: Fast jagginess estimation using edge tracking
+    # Info callback - stores latest object info
     # =======================================================
-    def estimate_jagginess_fast(self, rotated_roi, body_start_col, body_end_col):
-        """
-        Estimate jagginess by tracking top and bottom edges in the body region.
+    def info_callback(self, msg: String):
+        """Store the latest object information."""
+        try:
+            self.latest_info = json.loads(msg.data)
+        except Exception as e:
+            self.get_logger().error(f"❌ Error in info callback: {e}")
 
-        Returns:
-            jag_overall, jag_top, jag_bottom
+    # =======================================================
+    # OPTIMIZED: Estimate side jagginess with efficient sampling
+    # =======================================================
+    def estimate_side_jagginess(
+        self,
+        binary_image,
+        mean,
+        v0, v1,
+        slice_positions,
+        min_v1, max_v1,
+        body_start_idx,
+        body_end_idx,
+        slice_data  # Reuse already computed slice data
+    ):
         """
-        if body_end_col <= body_start_col or body_end_col - body_start_col < 5:
+        Estimate 'jagginess' of the shaft side contour using pre-computed slice data.
+        """
+        s_samples = []
+        t_side_min = []
+        t_side_max = []
+
+        for i in range(body_start_idx, body_end_idx + 1):
+            if i >= len(slice_data):
+                continue
+                
+            points = slice_data[i]['points']
+            
+            if len(points) == 0:
+                continue
+
+            rel = points - mean
+            s_vals = rel @ v0
+            t_vals = rel @ v1
+
+            t_min = float(np.min(t_vals))
+            t_max = float(np.max(t_vals))
+            s_mid = float(np.mean(s_vals))
+
+            s_samples.append(s_mid)
+            t_side_min.append(t_min)
+            t_side_max.append(t_max)
+
+        if len(s_samples) < 5:
             return 0.0, 0.0, 0.0
 
-        # Extract body region columns
-        body_region = rotated_roi[:, body_start_col:body_end_col + 1]
+        s_samples = np.asarray(s_samples, dtype=np.float32)
+        t_side_min = np.asarray(t_side_min, dtype=np.float32)
+        t_side_max = np.asarray(t_side_max, dtype=np.float32)
 
-        top_edges = []
-        bottom_edges = []
-        valid_cols = []
-
-        # For each column, find top and bottom edge
-        for col_idx in range(body_region.shape[1]):
-            col = body_region[:, col_idx]
-            nonzero_rows = np.where(col > 0)[0]
-
-            if len(nonzero_rows) > 0:
-                top_edges.append(nonzero_rows[0])
-                bottom_edges.append(nonzero_rows[-1])
-                valid_cols.append(col_idx)
-
-        if len(valid_cols) < 5:
-            return 0.0, 0.0, 0.0
-
-        valid_cols = np.array(valid_cols, dtype=np.float32)
-        top_edges = np.array(top_edges, dtype=np.float32)
-        bottom_edges = np.array(bottom_edges, dtype=np.float32)
-
-        def compute_edge_jagginess(x, y):
-            """Fit line and compute std of residuals"""
-            if len(y) < 5:
+        def jag_for_side(s, t):
+            if len(t) < 5:
                 return 0.0
-            A = np.vstack([x, np.ones_like(x)]).T
-            coeffs = LA.lstsq(A, y, rcond=None)[0]
-            y_fit = coeffs[0] * x + coeffs[1]
-            residuals = y - y_fit
+            A = np.vstack([s, np.ones_like(s)]).T
+            a, b = LA.lstsq(A, t, rcond=None)[0]
+            t_fit = a * s + b
+            residuals = t - t_fit
 
-            # Smooth residuals
+            # Smooth the residuals
             smooth_window = max(3, len(residuals) // 15)
-            residuals_smooth = self.smooth_1d(residuals, smooth_window)
+            residuals_smooth = uniform_filter1d(residuals, size=smooth_window, mode='nearest')
 
             return float(np.std(residuals_smooth))
 
-        jag_top = compute_edge_jagginess(valid_cols, top_edges)
-        jag_bottom = compute_edge_jagginess(valid_cols, bottom_edges)
-        jag_overall = max(jag_top, jag_bottom)
+        jag_min = jag_for_side(s_samples, t_side_min)
+        jag_max = jag_for_side(s_samples, t_side_max)
+        jag_overall = max(jag_min, jag_max)
 
-        return jag_overall, jag_top, jag_bottom
+        return jag_overall, jag_min, jag_max
 
     # =======================================================
-    # OPTIMIZED: Classify screw type
+    # Classify screw type based on jagginess
     # =======================================================
     def classify_screw_by_jagginess(self, jag_value, body_diameter_px):
         """
@@ -406,7 +316,7 @@ class PhysicalFeaturesNode(Node):
         is_wood = jag_norm > self.jagginess_threshold
 
         label = "WOOD" if is_wood else "METAL"
-        color = (0, 255, 255) if is_wood else (255, 0, 255)  # yellow for wood, magenta for metal
+        color = (0, 255, 255) if is_wood else (255, 0, 255)
 
         if self.debug_logging:
             self.get_logger().info(
@@ -417,69 +327,33 @@ class PhysicalFeaturesNode(Node):
         return label, color, jag_norm
 
     # =======================================================
-    # OPTIMIZED: Map point from rotated ROI back to original image
+    # OPTIMIZED: Main processing function
     # =======================================================
-    def map_roi_to_original(self, col, row, roi_info):
+    def process_and_publish(self):
         """
-        Map a point from rotated ROI coordinates back to original image coordinates.
+        Process the latest image and info data with optimized algorithms.
         """
-        # Point in ROI coordinates (before rotation)
-        roi_center = roi_info['roi_center']
-        angle_deg = roi_info['angle_deg']
-
-        # Reverse rotation
-        angle_rad = np.radians(angle_deg)
-        cos_a = np.cos(angle_rad)
-        sin_a = np.sin(angle_rad)
-
-        # Translate to center, rotate, translate back
-        dx = col - roi_center[0]
-        dy = row - roi_center[1]
-
-        x_rot = dx * cos_a - dy * sin_a + roi_center[0]
-        y_rot = dx * sin_a + dy * cos_a + roi_center[1]
-
-        # Add ROI offset
-        x_orig = x_rot + roi_info['offset'][0]
-        y_orig = y_rot + roi_info['offset'][1]
-
-        return int(x_orig), int(y_orig)
-
-    # =======================================================
-    # Main synchronized callback
-    # =======================================================
-    def synchronized_callback(self, image_msg: Image, info_msg: String):
-        """
-        Called when image and info messages are synchronized.
-        OPTIMIZED: Frame skipping and centermost object processing.
-        """
-
-        # ---------------------------------------------------
-        # OPTIMIZATION: Frame skipping for slow streams
-        # ---------------------------------------------------
-        self.frame_counter += 1
-        if self.frame_counter % self.frame_skip != 0:
+        # Prevent re-entry
+        if self.processing:
             return
+            
+        self.processing = True
 
         try:
-            # ---------------------------------------------------
-            # 1. Convert binary image to BGR for visualization
-            # ---------------------------------------------------
-            binary_image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding="mono8")
+            # Frame skipping
+            self.frame_counter += 1
+            if self.frame_counter % self.frame_skip != 0:
+                return
+
+            binary_image = self.latest_image.copy()
             output_image = cv2.cvtColor(binary_image, cv2.COLOR_GRAY2BGR)
 
-            # ---------------------------------------------------
-            # 2. Parse JSON from info_msg
-            # ---------------------------------------------------
-            info_data = json.loads(info_msg.data)
-            objects = info_data.get("objects", [])
+            objects = self.latest_info.get("objects", [])
 
-            # ---------------------------------------------------
-            # 2.1 Prepare output JSON structure
-            # ---------------------------------------------------
+            # Prepare output JSON
             output_json = {
-                "timestamp": image_msg.header.stamp.sec + image_msg.header.stamp.nanosec * 1e-9,
-                "frame_id": image_msg.header.frame_id,
+                "timestamp": self.latest_image_header.stamp.sec + self.latest_image_header.stamp.nanosec * 1e-9,
+                "frame_id": self.latest_image_header.frame_id,
                 "pixel_to_mm_ratio": self.pixel_to_mm_ratio,
                 "objects": []
             }
@@ -487,15 +361,11 @@ class PhysicalFeaturesNode(Node):
             if len(objects) > 0 and self.debug_logging:
                 self.get_logger().info(f"\n{'='*70}\n  PROCESSING {len(objects)} OBJECT(S)\n{'='*70}")
 
-            # ---------------------------------------------------
-            # 2.2 OPTIMIZATION: Filter to closest object if enabled
-            # ---------------------------------------------------
+            # Filter to closest object if enabled
             if self.process_closest_only and len(objects) > 0:
-                # Get image center
                 h, w = binary_image.shape[:2]
                 img_center = np.array([w / 2.0, h / 2.0])
 
-                # Find object closest to image center
                 min_dist = float('inf')
                 closest_obj = None
 
@@ -508,7 +378,6 @@ class PhysicalFeaturesNode(Node):
                         min_dist = dist
                         closest_obj = obj
 
-                # Process only the closest object
                 objects = [closest_obj] if closest_obj is not None else []
 
                 if self.debug_logging:
@@ -516,11 +385,8 @@ class PhysicalFeaturesNode(Node):
                         f"  ✓ Filtered to closest object (distance: {min_dist:.1f}px from center)"
                     )
 
-            # ---------------------------------------------------
-            # 3. Process each object
-            # ---------------------------------------------------
+            # Process each object
             for obj in objects:
-                # Basic fields from JSON
                 object_id = obj.get("object_id", 0)
                 name = obj.get("name", f"Object #{object_id}")
                 center_px = obj.get("center_px", [0.0, 0.0])
@@ -529,7 +395,6 @@ class PhysicalFeaturesNode(Node):
 
                 cx, cy = int(center_px[0]), int(center_px[1])
 
-                # Initialize object features dictionary
                 obj_features = {
                     "object_id": object_id,
                     "name": name,
@@ -544,16 +409,13 @@ class PhysicalFeaturesNode(Node):
                 # Draw center dot
                 cv2.circle(output_image, (cx, cy), self.center_dot_radius, self.bbox_color, -1)
 
-                # Draw principal-axis–aligned bounding box
+                # Draw bounding box
                 if len(bbox_aligned) == 4:
                     bbox_np = np.array(bbox_aligned, dtype=np.int32).reshape(-1, 1, 2)
                     cv2.polylines(output_image, [bbox_np], isClosed=True, color=(0, 255, 0), thickness=self.bbox_thickness)
 
-                # ---------------------------------------------------
-                # 3.1 Compute size in px and convert to mm
-                # ---------------------------------------------------
+                # Compute size
                 width_px = height_px = None
-
                 if len(bbox_aligned) == 4:
                     pts = np.array(bbox_aligned, dtype=np.float32)
                     v_edge0 = pts[1] - pts[0]
@@ -563,7 +425,6 @@ class PhysicalFeaturesNode(Node):
                     width_px = max(len0, len1)
                     height_px = min(len0, len1)
 
-                # Convert to mm
                 size_text = ""
                 if width_px is not None and height_px is not None:
                     width_mm = width_px * self.pixel_to_mm_ratio
@@ -575,62 +436,61 @@ class PhysicalFeaturesNode(Node):
                     obj_features["bbox_width_mm"] = float(width_mm)
                     obj_features["bbox_height_mm"] = float(height_mm)
 
-                # ---------------------------------------------------
-                # 3.2 Prepare text list
-                # ---------------------------------------------------
                 texts = [name]
                 if size_text:
                     texts.append(f"Size: {size_text}")
 
-                # ---------------------------------------------------
-                # 4. OPTIMIZED: Extract rotated ROI and process
-                # ---------------------------------------------------
+                # Extract PCA info
                 if len(bbox_aligned) == 4 and moment_vector:
-                    # Principal axis direction
                     vx = moment_vector.get("vx", 1.0)
                     vy = moment_vector.get("vy", 0.0)
                     v0 = np.array([vx, vy], dtype=np.float32)
                     v0 = v0 / (np.linalg.norm(v0) + 1e-9)
 
+                    v1 = np.array([-v0[1], v0[0]], dtype=np.float32)
                     mean = np.array([cx, cy], dtype=np.float32)
 
-                    # ---------------------------------------------------
-                    # 4.1 Extract and rotate ROI (BIG OPTIMIZATION)
-                    # ---------------------------------------------------
-                    rotated_roi, roi_info = self.extract_rotated_roi(binary_image, bbox_aligned, mean, v0)
+                    pts = np.array(bbox_aligned, dtype=np.float32)
+                    proj_v0 = np.dot(pts - mean, v0)
+                    proj_v1 = np.dot(pts - mean, v1)
 
-                    if rotated_roi is None:
-                        if self.debug_logging:
-                            self.get_logger().warn(f"  │ Failed to extract ROI for object {object_id}")
-                        output_json["objects"].append(obj_features)
-                        continue
+                    min_v0 = np.min(proj_v0)
+                    max_v0 = np.max(proj_v0)
+                    min_v1 = np.min(proj_v1)
+                    max_v1 = np.max(proj_v1)
 
-                    # ---------------------------------------------------
-                    # 4.2 Fast slice width computation (column sums)
-                    # ---------------------------------------------------
-                    slice_widths = self.compute_slice_widths_fast(rotated_roi)
-
-                    # Adaptive slice count based on object length
-                    num_cols = len(slice_widths)
-                    num_slices = int(np.clip(num_cols, self.min_slices, self.max_slices))
-
-                    # Downsample if needed
-                    if num_cols > num_slices:
-                        indices = np.linspace(0, num_cols - 1, num_slices).astype(int)
-                        slice_widths = slice_widths[indices]
-
-                    n = len(slice_widths)
+                    # OPTIMIZED: Scan slices with cap
+                    length_px = max_v0 - min_v0
+                    num_slices = min(int(length_px * 2), self.max_slices)
+                    if num_slices < 10:
+                        num_slices = 10
 
                     if self.debug_logging:
-                        self.get_logger().info(f"  │ Using {n} slices (ROI: {rotated_roi.shape[1]}x{rotated_roi.shape[0]})")
+                        self.get_logger().info(f"  │ Scanning {num_slices} slices along {length_px:.1f}px")
 
-                    # ---------------------------------------------------
-                    # 4.3 Smooth and detect head-body separation
-                    # ---------------------------------------------------
+                    slice_positions = np.linspace(min_v0, max_v0, num_slices)
+                    slice_widths = []
+                    slice_data = []  # Store for reuse in jagginess
+
+                    # OPTIMIZED: Single pass slice scanning
+                    for s in slice_positions:
+                        center_slice = mean + s * v0
+                        p1 = center_slice + min_v1 * v1
+                        p2 = center_slice + max_v1 * v1
+
+                        # Use efficient line sampling
+                        points, white_count = self.sample_line_efficient(binary_image, p1, p2)
+                        
+                        slice_widths.append(white_count)
+                        slice_data.append({'points': points, 'width': white_count})
+
+                    slice_widths = np.array(slice_widths, dtype=np.float32)
+
+                    # Detect head-body separation
+                    n = len(slice_widths)
                     window_size = max(5, n // 20)
-                    slice_widths_smooth = self.smooth_1d(slice_widths, window_size)
+                    slice_widths_smooth = uniform_filter1d(slice_widths, size=window_size, mode='nearest')
 
-                    # Compute mean width in first 1/3 and last 1/3
                     third = max(5, n // 3)
                     head_region_width = np.mean(slice_widths_smooth[:third])
                     body_region_width = np.mean(slice_widths_smooth[-third:])
@@ -640,7 +500,6 @@ class PhysicalFeaturesNode(Node):
                             f"  │ Head avg: {head_region_width:.1f}px, Body avg: {body_region_width:.1f}px"
                         )
 
-                    # Find separation point
                     target_width = (head_region_width + body_region_width) / 2.0
                     search_start = int(n * 0.2)
                     search_end = int(n * 0.8)
@@ -660,40 +519,25 @@ class PhysicalFeaturesNode(Node):
                             f"(width={slice_widths_smooth[separation_idx]:.1f}px)"
                         )
 
-                    # ---------------------------------------------------
-                    # 4.4 Map separation line back to original image
-                    # ---------------------------------------------------
-                    # Find actual column index in rotated ROI
-                    if num_cols > num_slices:
-                        sep_col = indices[separation_idx]
-                    else:
-                        sep_col = separation_idx
+                    separation_pos = slice_positions[separation_idx]
+                    separation_center = mean + separation_pos * v0
+                    sep_p1 = separation_center + min_v1 * v1
+                    sep_p2 = separation_center + max_v1 * v1
 
-                    # Get top and bottom points of separation line
-                    sep_col_data = rotated_roi[:, sep_col]
-                    nonzero_rows = np.where(sep_col_data > 0)[0]
+                    sep_p1_int = (int(sep_p1[0]), int(sep_p1[1]))
+                    sep_p2_int = (int(sep_p2[0]), int(sep_p2[1]))
 
-                    if len(nonzero_rows) > 0:
-                        sep_top_row = nonzero_rows[0]
-                        sep_bottom_row = nonzero_rows[-1]
+                    cv2.line(output_image, sep_p1_int, sep_p2_int, (255, 255, 0), 2)
 
-                        # Map back to original coordinates
-                        sep_p1 = self.map_roi_to_original(sep_col, sep_top_row, roi_info)
-                        sep_p2 = self.map_roi_to_original(sep_col, sep_bottom_row, roi_info)
+                    obj_features["separation_line"] = {
+                        "p1": [float(sep_p1[0]), float(sep_p1[1])],
+                        "p2": [float(sep_p2[0]), float(sep_p2[1])],
+                        "center_point": [float(separation_center[0]), float(separation_center[1])],
+                        "slice_index": int(separation_idx),
+                        "total_slices": int(n)
+                    }
 
-                        # Draw separation line
-                        cv2.line(output_image, sep_p1, sep_p2, (255, 255, 0), 2)  # cyan
-
-                        obj_features["separation_line"] = {
-                            "p1": [float(sep_p1[0]), float(sep_p1[1])],
-                            "p2": [float(sep_p2[0]), float(sep_p2[1])],
-                            "slice_index": int(separation_idx),
-                            "total_slices": int(n)
-                        }
-
-                    # ---------------------------------------------------
-                    # 4.5 Determine body region
-                    # ---------------------------------------------------
+                    # Determine body region
                     before = slice_widths_smooth[:separation_idx + 1]
                     after = slice_widths_smooth[separation_idx + 1:]
 
@@ -714,10 +558,12 @@ class PhysicalFeaturesNode(Node):
                             body_start_idx = separation_idx + 1
                             body_end_idx = n - 1
 
-                    # Body measurements
                     body_diameter_px = float(np.mean(body_slice_widths)) if len(body_slice_widths) > 0 else 0.0
                     body_diameter_mm = body_diameter_px * self.pixel_to_mm_ratio
-                    body_length_px = float(body_end_idx - body_start_idx)
+
+                    body_start_pos = slice_positions[body_start_idx]
+                    body_end_pos = slice_positions[body_end_idx]
+                    body_length_px = abs(body_end_pos - body_start_pos)
                     body_length_mm = body_length_px * self.pixel_to_mm_ratio
 
                     obj_features["body_diameter_px"] = float(body_diameter_px)
@@ -725,36 +571,33 @@ class PhysicalFeaturesNode(Node):
                     obj_features["body_length_px"] = float(body_length_px)
                     obj_features["body_length_mm"] = float(body_length_mm)
 
-                    # ---------------------------------------------------
-                    # 4.6 OPTIMIZED: Fast jagginess estimation
-                    # ---------------------------------------------------
-                    # Map slice indices to actual columns
-                    if num_cols > num_slices:
-                        body_start_col = indices[body_start_idx]
-                        body_end_col = indices[body_end_idx]
-                    else:
-                        body_start_col = body_start_idx
-                        body_end_col = body_end_idx
-
-                    jag_overall, jag_top, jag_bottom = self.estimate_jagginess_fast(
-                        rotated_roi, body_start_col, body_end_col
+                    # OPTIMIZED: Estimate jagginess using pre-computed slice data
+                    jag_overall, jag_min, jag_max = self.estimate_side_jagginess(
+                        binary_image=binary_image,
+                        mean=mean,
+                        v0=v0,
+                        v1=v1,
+                        slice_positions=slice_positions,
+                        min_v1=min_v1,
+                        max_v1=max_v1,
+                        body_start_idx=body_start_idx,
+                        body_end_idx=body_end_idx,
+                        slice_data=slice_data
                     )
 
                     if self.debug_logging:
                         self.get_logger().info(
                             f"  │ Jagginess: overall={jag_overall:.3f}px, "
-                            f"top={jag_top:.3f}px, bottom={jag_bottom:.3f}px"
+                            f"side_min={jag_min:.3f}px, side_max={jag_max:.3f}px"
                         )
 
                     obj_features["jagginess"] = {
                         "overall_px": float(jag_overall),
-                        "top_px": float(jag_top),
-                        "bottom_px": float(jag_bottom)
+                        "side_min_px": float(jag_min),
+                        "side_max_px": float(jag_max)
                     }
 
-                    # ---------------------------------------------------
-                    # 4.7 Classify screw type
-                    # ---------------------------------------------------
+                    # Classify screw type
                     screw_type, type_color, jag_norm = self.classify_screw_by_jagginess(
                         jag_value=jag_overall,
                         body_diameter_px=body_diameter_px
@@ -766,130 +609,93 @@ class PhysicalFeaturesNode(Node):
                         "jagginess_threshold": float(self.jagginess_threshold)
                     }
 
-                    # ---------------------------------------------------
-                    # 4.8 Pick-up point (center of body region)
-                    # ---------------------------------------------------
-                    body_center_idx = (body_start_idx + body_end_idx) // 2
-                    if num_cols > num_slices:
-                        body_center_col = indices[body_center_idx]
-                    else:
-                        body_center_col = body_center_idx
+                    # Pick-up point
+                    body_center_pos = 0.5 * (body_start_pos + body_end_pos)
+                    pick_up_world = mean + body_center_pos * v0
+                    pick_up_x = int(pick_up_world[0])
+                    pick_up_y = int(pick_up_world[1])
 
-                    # Find center row in body center column
-                    body_center_col_data = rotated_roi[:, body_center_col]
-                    nonzero_rows = np.where(body_center_col_data > 0)[0]
+                    # Calculate image center
+                    h, w = binary_image.shape[:2]
+                    img_center_x = w / 2.0
+                    img_center_y = h / 2.0
 
-                    if len(nonzero_rows) > 0:
-                        body_center_row = (nonzero_rows[0] + nonzero_rows[-1]) // 2
-                        pick_up_x, pick_up_y = self.map_roi_to_original(body_center_col, body_center_row, roi_info)
+                    # Calculate pickup point relative to camera center
+                    pick_up_relative_x = pick_up_world[0] - img_center_x
+                    pick_up_relative_y = pick_up_world[1] - img_center_y
 
-                        obj_features["pickup_point_px"] = [float(pick_up_x), float(pick_up_y)]
-                        obj_features["pickup_point_mm"] = [
-                            float(pick_up_x * self.pixel_to_mm_ratio),
-                            float(pick_up_y * self.pixel_to_mm_ratio)
-                        ]
+                    # Store both absolute and relative coordinates
+                    obj_features["pickup_point_px"] = [float(pick_up_x), float(pick_up_y)]
+                    obj_features["pickup_point_mm"] = [
+                        float(pick_up_x * self.pixel_to_mm_ratio),
+                        float(pick_up_y * self.pixel_to_mm_ratio)
+                    ]
+                    obj_features["pickup_point_relative_to_camera_px"] = [
+                        float(pick_up_relative_x), 
+                        float(pick_up_relative_y)
+                    ]
+                    obj_features["pickup_point_relative_to_camera_mm"] = [
+                        float(pick_up_relative_x * self.pixel_to_mm_ratio),
+                        float(pick_up_relative_y * self.pixel_to_mm_ratio)
+                    ]
 
-                        # Draw pick-up point
-                        cv2.circle(output_image, (pick_up_x, pick_up_y), 5, (0, 255, 0), -1)
-                        cross_size = 8
-                        cv2.line(output_image, (pick_up_x - cross_size, pick_up_y),
-                                (pick_up_x + cross_size, pick_up_y), (0, 255, 0), 2)
-                        cv2.line(output_image, (pick_up_x, pick_up_y - cross_size),
-                                (pick_up_x, pick_up_y + cross_size), (0, 255, 0), 2)
+                    # Draw pick-up point
+                    cv2.circle(output_image, (pick_up_x, pick_up_y), 5, (0, 255, 0), -1)
+                    cross_size = 8
+                    cv2.line(output_image, (pick_up_x - cross_size, pick_up_y),
+                            (pick_up_x + cross_size, pick_up_y), (0, 255, 0), 2)
+                    cv2.line(output_image, (pick_up_x, pick_up_y - cross_size),
+                            (pick_up_x, pick_up_y + cross_size), (0, 255, 0), 2)
 
-                    # ---------------------------------------------------
-                    # 4.9 Draw body region highlight
-                    # ---------------------------------------------------
-                    # Get corners of body region in rotated ROI
-                    if num_cols > num_slices:
-                        body_start_col_actual = indices[body_start_idx]
-                        body_end_col_actual = indices[body_end_idx]
-                    else:
-                        body_start_col_actual = body_start_idx
-                        body_end_col_actual = body_end_idx
+                    # Draw body region
+                    body_start_center = mean + body_start_pos * v0
+                    body_end_center = mean + body_end_pos * v0
 
-                    # Find top and bottom edges at start and end
-                    start_col_data = rotated_roi[:, body_start_col_actual]
-                    end_col_data = rotated_roi[:, body_end_col_actual]
+                    body_poly = np.array([
+                        body_start_center + min_v1 * v1,
+                        body_start_center + max_v1 * v1,
+                        body_end_center + max_v1 * v1,
+                        body_end_center + min_v1 * v1,
+                    ], dtype=np.int32)
 
-                    start_rows = np.where(start_col_data > 0)[0]
-                    end_rows = np.where(end_col_data > 0)[0]
+                    obj_features["body_region_polygon"] = [
+                        [float(p[0]), float(p[1])] for p in body_poly
+                    ]
 
-                    if len(start_rows) > 0 and len(end_rows) > 0:
-                        # Map corners back to original
-                        p1 = self.map_roi_to_original(body_start_col_actual, start_rows[0], roi_info)
-                        p2 = self.map_roi_to_original(body_start_col_actual, start_rows[-1], roi_info)
-                        p3 = self.map_roi_to_original(body_end_col_actual, end_rows[-1], roi_info)
-                        p4 = self.map_roi_to_original(body_end_col_actual, end_rows[0], roi_info)
+                    overlay = output_image.copy()
+                    cv2.fillPoly(overlay, [body_poly], type_color)
+                    cv2.addWeighted(overlay, 0.3, output_image, 0.7, 0, output_image)
 
-                        body_poly = np.array([p1, p2, p3, p4], dtype=np.int32)
-
-                        obj_features["body_region_polygon"] = [
-                            [float(p[0]), float(p[1])] for p in body_poly
-                        ]
-
-                        # Draw semi-transparent overlay
-                        overlay = output_image.copy()
-                        cv2.fillPoly(overlay, [body_poly], type_color)
-                        cv2.addWeighted(overlay, 0.3, output_image, 0.7, 0, output_image)
-
-                    # ---------------------------------------------------
-                    # 4.10 Add text annotations
-                    # ---------------------------------------------------
                     texts.append(f"Body dia: {body_diameter_mm:.2f} mm")
                     texts.append(f"Body len: {body_length_mm:.2f} mm")
                     texts.append(f"Type: {screw_type} (jag={jag_norm:.4f})")
 
-                    # Draw screw type label
-                    cv2.putText(
-                        output_image,
-                        screw_type,
-                        (cx + 15, cy + 15),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        type_color,
-                        2,
-                        cv2.LINE_AA
-                    )
+                    cv2.putText(output_image, screw_type, (cx + 15, cy + 15),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, type_color, 2, cv2.LINE_AA)
 
                     if self.debug_logging:
                         symbol = "🪵" if screw_type == "WOOD" else "🔩"
                         self.get_logger().info(f"  └─ ✓ {symbol} {screw_type}\n")
 
-                # ---------------------------------------------------
-                # 5. Draw all text annotations
-                # ---------------------------------------------------
+                # Draw text annotations
                 text_x = cx + 10
                 text_y = cy - 10
                 line_spacing = 20
 
                 for i, text in enumerate(texts):
-                    cv2.putText(
-                        output_image,
-                        text,
-                        (text_x, text_y + i * line_spacing),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        self.bbox_color,
-                        1,
-                        cv2.LINE_AA
-                    )
+                    cv2.putText(output_image, text, (text_x, text_y + i * line_spacing),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.bbox_color, 1, cv2.LINE_AA)
 
-                # Add processed object to output JSON
                 output_json["objects"].append(obj_features)
 
-            # ---------------------------------------------------
-            # 6. Publish annotated image
-            # ---------------------------------------------------
+            # Publish results
             out_msg = self.bridge.cv2_to_imgmsg(output_image, encoding="bgr8")
-            out_msg.header = image_msg.header
+            out_msg.header = self.latest_image_header
             self.image_pub.publish(out_msg)
 
-            # ---------------------------------------------------
-            # 7. Publish JSON features
-            # ---------------------------------------------------
+            # OPTIMIZED: Compact JSON (no indentation)
             json_msg = String()
-            json_msg.data = json.dumps(output_json, indent=2)
+            json_msg.data = json.dumps(output_json)
             self.json_pub.publish(json_msg)
 
             if self.debug_logging:
@@ -898,9 +704,11 @@ class PhysicalFeaturesNode(Node):
                 )
 
         except Exception as e:
-            self.get_logger().error(f"❌ Error in synchronized callback: {e}")
+            self.get_logger().error(f"❌ Error in processing: {e}")
             import traceback
             self.get_logger().error(traceback.format_exc())
+        finally:
+            self.processing = False
 
 
 def main(args=None):
