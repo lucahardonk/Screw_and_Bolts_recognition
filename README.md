@@ -1,6 +1,6 @@
 # 🔩🤖📷 Automated Screws & Bolts Sorting System
 
-<video src="documentation_media/cnc_pick_and_place.mp4"
+<video src="documentation_media/cnc_pick_and_place.gif"
        width="800"
        height="450"
        autoplay
