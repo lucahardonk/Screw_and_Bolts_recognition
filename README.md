@@ -940,3 +940,223 @@ The node classifies screws as WOOD or METAL based on normalized jagginess:
 - Visualization uses **yellow overlay** for wood screws, **magenta overlay** for metal screws
 
 The complete end-to-end vision pipeline: (`first_camera_node_linux_native.py`) -> `camera/image_raw` -> (`calibrated_camera_node.py`) -> `camera/calibrated` -> (`background_removal_node.py`) -> `camera/background_removed` -> (`grey_scaled_node.py`) -> `camera/background_grayed` -> (`otsu_thresholding.py`) -> `camera/otsu` -> (`morphological_closure_node.py`) -> `camera/closure` -> (`min_rect_area_node.py`) -> `camera/object_information` (JSON) -> (`physical_features_extraction.py`) -> `camera/physical_features` (visualization) + `camera/object_physical_features` (JSON). This final stage transforms geometric primitives into actionable physical measurements and material classifications, providing robotic systems with everything needed for intelligent object manipulation: precise pickup coordinates, dimensional specifications, orientation data, and material-specific handling parameters for optimized grasping strategies.
+
+---
+
+The complete computer vision pipeline has been integrated into a unified launch system that orchestrates all processing nodes with a single command:
+
+```bash
+ros2 launch camera_pkg camera_launch.py
+```
+
+This launch file automatically initializes the entire processing chain from raw camera acquisition through physical feature extraction, ensuring proper node sequencing, topic connections, and parameter propagation. The system architecture follows a modular design philosophy where each node performs a specialized task and communicates through well-defined ROS2 topics, enabling easy debugging, performance profiling, and pipeline reconfiguration.
+
+Beyond the core production pipeline, I've implemented Gaussian blur and Canny edge detection at least once in a lifetime. These nodes served as pedagogical examples of classical computer vision techniques and tested the pipeline scalability. 
+
+![Additional Filters](documentation_media/camera_visualizer.png)
+
+Also a web-based GUI using Flask and to visualize real-time outputs from each processing stage, providing operators with intuitive monitoring and control capabilities.
+
+![Full Stack Pipeline](documentation_media/full_pipeline_yet.png)
+
+---
+## CNC Planning and Pick-and-Place
+---
+
+This section describes the physical actuation system responsible for sorting screws based on the computer vision pipeline's classification results. While not directly part of the computer vision examination requirements, implementing a complete robotic manipulation system demonstrates the practical application of the vision algorithms and provides a satisfying end-to-end demonstration of autonomous object handling.
+
+### Arduino Control Package
+
+#### Arduino Control Node
+
+This ROS2 node provides a bidirectional serial communication bridge between the ROS2 ecosystem and an Arduino microcontroller, enabling high-level robotic control through standard ROS2 interfaces. The node implements a dual-interface architecture: **publish/subscribe topics** for real-time servo motor control (wrist and gripper actuation), and **ROS2 services** for stateful LED color management (visual feedback system) made possible by custom services definitions defined in the service package. 
+
+**Usage:**
+```bash
+
+# Custom serial port and baud rate
+ros2 run arduino_control_pkg arduino_control_server --ros-args \
+  -p port:=/dev/ttyUSB0 \
+  -p baud:=115200 \
+  -p timeout:=1.0 \
+  -p auto_reconnect:=true
+
+# Servo control examples (pub/sub)
+# Servo 1: Wrist rotation
+ros2 topic pub /servo1 std_msgs/msg/Int32 "{data: 90}" --once
+ros2 topic pub /servo1 std_msgs/msg/Int32 "{data: 45}" --once
+
+# Servo 2: Gripper open/close
+ros2 topic pub /servo2 std_msgs/msg/Int32 "{data: 180}" --once  # Open
+ros2 topic pub /servo2 std_msgs/msg/Int32 "{data: 0}" --once  # Close
+
+# LED control examples (service calls)
+# Set LED 0 to white
+ros2 service call /set_light_color services_pkg/srv/SetLightColor \
+  "{light_id: 0, r: 255, g: 255, b: 255}"
+
+# Set LED 1 to green (wood screw indicator)
+ros2 service call /set_light_color services_pkg/srv/SetLightColor \
+  "{light_id: 1, r: 0, g: 255, b: 0}"
+
+# Set LED 7 to blue (metal screw indicator)
+ros2 service call /set_light_color services_pkg/srv/SetLightColor \
+  "{light_id: 7, r: 0, g: 0, b: 255}"
+```
+
+
+![gripper and camera lights](documentation_media/camera_and_gripper.png)
+
+---
+
+## CNC Control Package
+
+This package provides the interface layer between ROS2 and GRBL-based CNC controllers, enabling high-level motion planning nodes to execute precise multi-axis movements through standard G-code commands. GRBL is a widely-adopted open-source firmware that runs on Arduino-compatible microcontrollers and provides a high-level abstraction for numerical control machines including CNC mills, laser cutters, and 3D printers. It interprets G-code commands (such as `G0 X10 Y10 F2000` for rapid positioning or `G1 X50 Y50 F500` for linear interpolation) and generates the low-level step and direction pulses required to drive stepper motors with precise timing and acceleration control. This package bridges the ROS2 ecosystem with GRBL's serial command interface, allowing robotic manipulation systems to leverage industrial-grade motion control capabilities for pick-and-place operations, tool path execution, and coordinated multi-axis movements.
+
+---
+
+#### CNC Serial Controller Node
+
+This ROS2 node establishes a bidirectional serial communication bridge with GRBL controllers, providing a publish/subscribe interface for G-code command transmission and real-time status monitoring. The node implements a dual-threaded architecture: the main thread handles ROS2 callbacks and command transmission via the `/serial_cnc_in` topic, while a dedicated background thread continuously polls the serial port for GRBL responses and publishes them to the `/serial_cnc_out` topic. 
+e` (default: `115200`) - Serial communication baud rate (must match GRBL firmware configuration)
+
+**ROS Topics:**
+- **Subscriber**: `/serial_cnc_in` (`std_msgs/String`) - Receives G-code commands to send to GRBL
+- **Publisher**: `/serial_cnc_out` (`std_msgs/String`) - Publishes GRBL responses (status, acknowledgments, errors)
+
+**Usage:**
+```bash
+
+# Custom serial port configuration
+ros2 run cnc_control_pkg serial_cnc_node --ros-args \
+  -p port:=/dev/ttyUSB0 \
+  -p baud_rate:=115200
+
+# Send G-code commands via topic
+# Rapid positioning to X=10, Y=10 at 2000 mm/min
+ros2 topic pub /serial_cnc_in std_msgs/msg/String "{data: 'G0 X10 Y10 F2000'}" --once
+
+# Linear interpolation to X=50, Y=50 at 500 mm/min
+ros2 topic pub /serial_cnc_in std_msgs/msg/String "{data: 'G1 X50 Y50 F500'}" --once
+
+# Home all axes
+ros2 topic pub /serial_cnc_in std_msgs/msg/String "{data: '$H'}" --once
+
+# Query GRBL status
+ros2 topic pub /serial_cnc_in std_msgs/msg/String "{data: '?'}" --once
+
+```
+
+**GRBL Response Types:**
+- `ok` - Command executed successfully
+- `error:<code>` - Command failed (e.g., `error:2` = bad number format)
+- `<Idle|MPos:0.000,0.000,0.000|...>` - Real-time status report
+- `Grbl 1.1h ['$' for help]` - Startup message
+
+**Architecture Highlights:**
+- **Dual-threaded design**: Non-blocking command transmission with continuous response monitoring
+- **Automatic initialization**: GRBL wake-up sequence on node startup
+- **Raw G-code interface**: Full access to GRBL capabilities without abstraction overhead
+- **Real-time feedback**: Immediate publication of GRBL status for motion planning synchronization
+
+---
+
+#### Joystick CNC Control Node
+
+This ROS2 node provides intuitive manual control of the CNC system through a standard game controller (joystick), enabling operators to perform setup operations, manual positioning, and system testing without writing G-code commands. The node implements a sophisticated control architecture with **exponential moving average (EMA) filtering** on joystick axes to eliminate jitter and provide smooth motion, a **fixed-rate jog command generator** (20 Hz default) decoupled from the variable-frequency joystick input stream, and **immediate response handling** for discrete controls (servos and lights). 
+
+**Key Features:**
+- **Smooth motion control**: EMA low-pass filtering eliminates joystick noise and provides fluid CNC movements
+- **Decoupled jog generation**: Fixed 20 Hz command rate independent of joystick polling frequency
+- **Multi-axis simultaneous control**: XYZ axes can be moved concurrently for diagonal trajectories
+- **Real-time position tracking**: Parses GRBL status reports to maintain current machine coordinates
+- **Integrated peripheral control**: Servos and lights controlled through the same joystick interface
+
+
+**Usage:**
+```bash
+# Standard usage with default parameters
+ros2 run cnc_control_pkg joystick_cnc_control
+
+# Custom configuration for faster/slower motion
+ros2 run cnc_control_pkg joystick_cnc_control --ros-args \
+  -p feed_rate:=2500 \
+  -p max_step:=0.5 \
+  -p deadzone:=0.15 \
+  -p jog_rate:=20.0 \
+  -p smoothing:=0.2
+
+```
+
+
+**Topics:**
+- **Publishes to**: `/serial_cnc_in` (G-code jog commands), `/servo1` (wrist position), `/servo2` (gripper position)
+- **Subscribes to**: `/joy` (ros2 joystick driver), `/serial_cnc_out` (GRBL status parsing)
+- **Service calls**: `/set_light_color` (LED array control)
+
+This node transforms a consumer game controller into a professional CNC interface, providing operators with intuitive multi-axis control for system setup, manual screw placement verification, and emergency manual override during autonomous operation.
+
+--- 
+
+
+#### CNC Motion Coordinator Node
+
+This ROS2 node serves as the high-level orchestration layer for the complete pick-and-place system, integrating computer vision, motion planning, and hardware control into a unified autonomous workflow. The node provides a **web-based graphical interface** (Flask server on port 8002) for real-time monitoring and manual control, featuring live camera feed display, detected object visualization with physical measurements, current CNC position tracking relative to a user-defined origin, and interactive waypoint management (Home + 4 custom placement points P1-P4). The core functionality implements **intelligent pick-and-place automation**: the `CATCH` operation computes gripper target positions from camera-detected pickup points using configurable gripper-to-camera offsets (default: X=-245mm, Y=0mm, Z=0mm), executes a 6-step sequence (XY positioning → gripper open → wrist rotation to match object orientation → Z descent → gripper close → ascent to safe plane), and waits for GRBL motion completion at each step to ensure reliable execution. The `PLACE` operation uses **rule-based decision logic** to sort screws into four destination bins based on material type (metal/wood) and body length (≤10mm / >10mm), automatically routing objects to the appropriate preset waypoint. This coordinator transforms the individual subsystems (camera pipeline, CNC controller, Arduino servos) into a cohesive autonomous sorting system capable of detecting, classifying, picking, and placing screws without human intervention.
+
+**Key Features:**
+- **Web-based control interface**: Real-time monitoring with live camera feed, object detection overlay, and position tracking
+- **Coordinate transformation Kinematics**: Converts camera-frame pickup points to CNC machine coordinates using gripper offset calibration
+- **Orientation-aware grasping**: Computes object principal axis from moment vectors and rotates wrist servo to align gripper
+- **Rule-based sorting logic**: Automatic bin selection based on screw material and size classification
+- **User-defined coordinate system**: All positions relative to operator-set origin (simplifies calibration and workspace setup)
+- **Waypoint management**: Home position (0,0,0) + 4 custom presets for bin locations, configurable via web interface
+
+**Web Interface Features:**
+- **Current Position Display**: Real-time XYZ coordinates relative to origin
+- **Camera View**: Live annotated image stream from physical features extraction node
+- **Detected Objects Panel**: List of all detected screws with measurements (diameter, length, jagginess, pickup point)
+- **Waypoint Controls**: Set origin, save current position to presets, navigate to saved positions
+- **CATCH Button**: Execute automated pick sequence for closest detected object
+- **PLACE Button**: Execute automated placement with intelligent bin selection
+- **Gripper Offset Display**: Shows current camera-to-gripper transformation parameters for debugging
+
+**Pick Sequence (6 Steps):**
+1. **XY Positioning**: Move to pickup point (computed from camera coordinates + gripper offset)
+2. **Gripper Open**: Extend gripper jaws to maximum aperture
+3. **Wrist Rotation**: Align gripper with object's principal axis (computed from moment vector)
+4. **Z Descent**: Lower by configurable offset (default: 10mm) at slow speed (500 mm/min)
+5. **Gripper Close**: Secure object with configurable grip force
+6. **Safe Plane Ascent**: Lift to safe height (default: 70mm) to clear workspace obstacles
+
+**Place Decision Logic:**
+- **Metal screw, ≤10mm** → Preset P1
+- **Metal screw, >10mm** → Preset P2
+- **Wood screw, ≤10mm** → Preset P3
+- **Wood screw, >10mm** → Preset P4
+
+**Usage:**
+```bash
+# Standard usage with default parameters
+ros2 run cnc_control_pkg cnc_motion_coordinator
+
+# Access web interface
+Open browser to: http://localhost:8002
+```
+
+**Topics:**
+- **Publishes to**: `/serial_cnc_in` (G-code commands), `/servo1` (gripper), `/servo2` (wrist)
+- **Subscribes to**: `/serial_cnc_out` (GRBL status), `/camera/physical_features` (annotated image), `/camera/object_physical_features` (JSON measurements)
+
+
+**Coordinate Transformation:**
+The node implements a critical coordinate transformation to convert camera-detected pickup points into CNC machine coordinates:
+
+```
+target_x = current_x + gripper_offset_x + pickup_y  
+target_y = current_y + gripper_offset_y + pickup_x 
+target_z = current_z + gripper_offset_z
+```
+
+This transformation accounts for the physical offset between the camera and gripper, and handles the 90° rotation between camera and CNC coordinate frames.
+
+This node represents the culmination of the entire system architecture, transforming raw camera pixels into precise robotic manipulation through a sophisticated pipeline of computer vision, motion planning, and hardware control, demonstrating a complete autonomous sorting solution suitable for industrial screw classification and handling applications.
