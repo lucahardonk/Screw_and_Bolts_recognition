@@ -124,7 +124,7 @@ From this point, the image processing pipeline begins with ( `first_camera_node_
 ## Camera calibration package: 
 From this point we change package for a moment because we need to calibrate the camera in order to be able to compute real world coordinates from pixel coordinates. 
 
-### capture images node
+### Capture images node
   
 This utility script provides an interactive command-line interface for manually capturing individual frames from the camera stream. It connects to the Flask web server's `/frame` endpoint and saves high-quality JPEG snapshots on demand.  
   
@@ -227,7 +227,7 @@ if not ret:
 
 #### Calibrated Camera Node
 
-This ROS2 node subscribes to raw fisheye camera images on `/camera/image_raw`, applies fisheye undistortion using pre-calibrated parameters from `fisheye_camera.yaml`, and performs a fixed center crop (1500×1500 pixels) to produce a rectified output. The undistortion maps are precomputed at startup using OpenCV's cv2.fisheye module with a balance parameter of 0.0 for minimal distortion. The processed image is published to `/camera/calibrated`, accompanied by an adjusted CameraInfo message on `/camera/calibrated/camera_info` that reflects the cropped intrinsics and zero distortion model. This pipeline ensures downstream nodes receive geometrically corrected images with accurate camera parameters for tasks like visual odometry or object detection.
+This ROS2 node subscribes to raw fisheye camera images on `/camera/image_raw`, applies fisheye undistortion using pre-calibrated parameters from `fisheye_camera.yaml`, and performs a fixed center crop (1500×1500 pixels) to produce a rectified output. The undistortion maps are precomputed at startup using OpenCV's cv2.fisheye module. The processed image is published to `/camera/calibrated`, accompanied by an adjusted CameraInfo message on `/camera/calibrated/camera_info` that reflects the cropped intrinsics and zero distortion model. This pipeline ensures downstream nodes receive geometrically corrected images with accurate camera parameters for tasks like visual odometry or object detection.
 
 ![Undistortion](documentation_media/distorted_vs_undistorted.png)
 
@@ -730,7 +730,7 @@ The complete vision pipeline now includes geometric analysis and structured data
 ---
 
 
-#### Physical Features Extraction Node (Optimized)
+#### Physical Features Extraction Node 
 
 This high-performance ROS2 node subscribes to binary mask images on `/camera/closure` and object geometry data on `/camera/object_information`, performs comprehensive physical feature extraction and classification, and publishes an annotated visualization on `/camera/physical_features` plus detailed JSON measurements on `/camera/object_physical_features`. The node employs optimized algorithms including Bresenham line sampling for efficient pixel traversal, adaptive slice scanning with configurable performance caps, and jagginess-based classification to distinguish wood screws from metal screws based on thread profile characteristics. Physical measurements include body diameter, body length, bounding box dimensions (all in both pixels and millimeters), pickup point coordinates (absolute and relative to camera center), and normalized jagginess metrics for material classification. The node uses Principal Component Analysis (PCA) to align measurements with the object's principal axis, ensuring accurate dimensional analysis regardless of object orientation. Advanced features include frame skipping for computational efficiency, closest-object filtering to the center of the camera for uniform lighting processing and configurable jagginess thresholds for classification tuning. The visualization overlay color-codes detected objects by type (yellow for wood screws, magenta for metal screws) and annotates pickup points with green crosshairs, making it ideal for robotic manipulation systems requiring precise grasp planning and object-specific handling strategies.
 
@@ -939,7 +939,7 @@ The node classifies screws as WOOD or METAL based on normalized jagginess:
 - **Metal screws**: Normalized jagginess <= threshold - fine threads create smoother profiles
 - Visualization uses **yellow overlay** for wood screws, **magenta overlay** for metal screws
 
-The complete end-to-end vision pipeline: (`first_camera_node_linux_native.py`) -> `camera/image_raw` -> (`calibrated_camera_node.py`) -> `camera/calibrated` -> (`background_removal_node.py`) -> `camera/background_removed` -> (`grey_scaled_node.py`) -> `camera/background_grayed` -> (`otsu_thresholding.py`) -> `camera/otsu` -> (`morphological_closure_node.py`) -> `camera/closure` -> (`min_rect_area_node.py`) -> `camera/object_information` (JSON) -> (`physical_features_extraction.py`) -> `camera/physical_features` (visualization) + `camera/object_physical_features` (JSON). This final stage transforms geometric primitives into actionable physical measurements and material classifications, providing robotic systems with everything needed for intelligent object manipulation: precise pickup coordinates, dimensional specifications, orientation data, and material-specific handling parameters for optimized grasping strategies.
+The complete end-to-end vision pipeline: (`first_camera_node_linux_native.py`) -> `camera/image_raw` -> (`calibrated_camera_node.py`) -> `camera/calibrated` -> (`background_removal_node.py`) -> `camera/background_removed` -> (`grey_scaled_node.py`) -> `camera/background_grayed` -> (`otsu_thresholding.py`) -> `camera/otsu` -> (`morphological_closure_node.py`) -> `camera/closure` -> (`min_rect_area_node.py`) -> `camera/object_information` (JSON) -> (`physical_features_extraction.py`) -> `camera/physical_features` (visualization) + `camera/object_physical_features` (JSON). This final stage transforms geometric primitives into actionable physical measurements and material classifications, providing robotic systems with everything needed for intelligent object manipulation: precise pickup coordinates, dimensional specifications, orientation data, and material-specific recognition for proper sorting strategies.
 
 ---
 
@@ -951,7 +951,7 @@ ros2 launch camera_pkg camera_launch.py
 
 This launch file automatically initializes the entire processing chain from raw camera acquisition through physical feature extraction, ensuring proper node sequencing, topic connections, and parameter propagation. The system architecture follows a modular design philosophy where each node performs a specialized task and communicates through well-defined ROS2 topics, enabling easy debugging, performance profiling, and pipeline reconfiguration.
 
-Beyond the core production pipeline, I've implemented Gaussian blur and Canny edge detection at least once in a lifetime. These nodes served as pedagogical examples of classical computer vision techniques and tested the pipeline scalability. 
+Beyond the core production pipeline, I've implemented Gaussian blur and Canny edge detection at least once in a lifetime. These nodes served as pedagogical examples of classical computer vision techniques while testing the pipeline scalability. 
 
 ![Additional Filters](documentation_media/camera_visualizer.png)
 
@@ -1018,7 +1018,6 @@ This package provides the interface layer between ROS2 and GRBL-based CNC contro
 #### CNC Serial Controller Node
 
 This ROS2 node establishes a bidirectional serial communication bridge with GRBL controllers, providing a publish/subscribe interface for G-code command transmission and real-time status monitoring. The node implements a dual-threaded architecture: the main thread handles ROS2 callbacks and command transmission via the `/serial_cnc_in` topic, while a dedicated background thread continuously polls the serial port for GRBL responses and publishes them to the `/serial_cnc_out` topic. 
-e` (default: `115200`) - Serial communication baud rate (must match GRBL firmware configuration)
 
 **ROS Topics:**
 - **Subscriber**: `/serial_cnc_in` (`std_msgs/String`) - Receives G-code commands to send to GRBL
